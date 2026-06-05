@@ -1,0 +1,292 @@
+// ============================================================
+// MARKET DATA — Yahoo Finance (no API key, no rate limits)
+// Uses query1.finance.yahoo.com — free, unlimited, no login
+// ============================================================
+
+import axios from 'axios';
+import { StockQuote, TechnicalIndicators, OptionsData } from './types';
+
+const YF_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'application/json',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
+
+// ── Quote via Yahoo Finance v8 chart API ───────────────────
+export async function getQuote(ticker: string): Promise<StockQuote | null> {
+  try {
+    // Get price data from chart endpoint
+    const chartRes = await axios.get(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}`,
+      {
+        params: { interval: '1d', range: '5d' },
+        headers: YF_HEADERS,
+        timeout: 10000,
+      }
+    );
+
+    const result = chartRes.data?.chart?.result?.[0];
+    if (!result) return null;
+    const meta = result.meta;
+    if (!meta?.regularMarketPrice) return null;
+
+    // Get fundamentals from quoteSummary endpoint
+    let beta: number | null = null;
+    let sector = 'Unknown';
+    let pe: number | null = null;
+    let marketCap = 0;
+    let name = ticker;
+    let avgVolume = meta.regularMarketVolume || 0;
+    let week52High = meta.fiftyTwoWeekHigh || meta.regularMarketPrice * 1.3;
+    let week52Low = meta.fiftyTwoWeekLow || meta.regularMarketPrice * 0.7;
+
+    try {
+      await sleep(200);
+      const summaryRes = await axios.get(
+        `https://query1.finance.yahoo.com/v11/finance/quoteSummary/${ticker}`,
+        {
+          params: { modules: 'summaryProfile,defaultKeyStatistics,summaryDetail,price' },
+          headers: YF_HEADERS,
+          timeout: 10000,
+        }
+      );
+
+      const summary = summaryRes.data?.quoteSummary?.result?.[0];
+      if (summary) {
+        const profile = summary.summaryProfile;
+        const keyStats = summary.defaultKeyStatistics;
+        const detail = summary.summaryDetail;
+        const price = summary.price;
+
+        sector = profile?.sector || 'Unknown';
+        beta = keyStats?.beta?.raw ?? null;
+        pe = detail?.trailingPE?.raw ?? null;
+        marketCap = price?.marketCap?.raw ?? 0;
+        name = price?.longName || price?.shortName || ticker;
+        avgVolume = detail?.averageVolume?.raw ?? meta.regularMarketVolume ?? 0;
+        week52High = detail?.fiftyTwoWeekHigh?.raw ?? week52High;
+        week52Low = detail?.fiftyTwoWeekLow?.raw ?? week52Low;
+      }
+    } catch {
+      // quoteSummary failed — use chart meta fallbacks
+    }
+
+    const price = meta.regularMarketPrice;
+    const prevClose = meta.chartPreviousClose || price;
+    const change = price - prevClose;
+    const changePercent = (change / prevClose) * 100;
+
+    return {
+      ticker: ticker.toUpperCase(),
+      name,
+      price,
+      change,
+      changePercent,
+      volume: meta.regularMarketVolume || 0,
+      avgVolume,
+      marketCap,
+      pe,
+      week52High,
+      week52Low,
+      beta,
+      sector,
+    };
+  } catch (err: any) {
+    console.error(`[MarketData] getQuote error for ${ticker}:`, err?.message);
+    return null;
+  }
+}
+
+// ── Technicals via Yahoo Finance historical data ───────────
+export async function getTechnicals(ticker: string, price: number): Promise<TechnicalIndicators> {
+  const defaultResult: TechnicalIndicators = {
+    ticker, rsi: null, macd: null, macdSignal: null,
+    sma20: null, sma50: null, sma200: null,
+    support: null, resistance: null, trend: 'neutral',
+  };
+
+  try {
+    // Fetch 200 days of daily closes to calculate indicators
+    const res = await axios.get(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}`,
+      {
+        params: { interval: '1d', range: '1y' },
+        headers: YF_HEADERS,
+        timeout: 10000,
+      }
+    );
+
+    const result = res.data?.chart?.result?.[0];
+    if (!result) return defaultResult;
+
+    const closes: number[] = result.indicators?.quote?.[0]?.close?.filter((c: any) => c != null) || [];
+    if (closes.length < 20) return defaultResult;
+
+    const indicators = { ...defaultResult };
+
+    // SMA calculations
+    indicators.sma20 = sma(closes, 20);
+    indicators.sma50 = sma(closes, 50);
+    indicators.sma200 = sma(closes, 200);
+
+    // RSI(14)
+    indicators.rsi = rsi(closes, 14);
+
+    // MACD(12,26,9)
+    const { macd: macdLine, signal } = macd(closes, 12, 26, 9);
+    indicators.macd = macdLine;
+    indicators.macdSignal = signal;
+
+    // Support/Resistance
+    indicators.support = indicators.sma50 ?? price * 0.93;
+    indicators.resistance = price * 1.10;
+
+    // Trend
+    const bullish = [
+      indicators.rsi !== null && indicators.rsi > 50 && indicators.rsi < 72,
+      indicators.macd !== null && indicators.macdSignal !== null && indicators.macd > indicators.macdSignal,
+      indicators.sma20 !== null && indicators.sma50 !== null && indicators.sma20 > indicators.sma50,
+      indicators.sma50 !== null && price > indicators.sma50,
+    ].filter(Boolean).length;
+
+    if (bullish >= 3) indicators.trend = 'bullish';
+    else if (bullish <= 1) indicators.trend = 'bearish';
+    else indicators.trend = 'neutral';
+
+    return indicators;
+  } catch (err: any) {
+    console.error(`[MarketData] getTechnicals error for ${ticker}:`, err?.message);
+    return defaultResult;
+  }
+}
+
+// ── Technical indicator math ───────────────────────────────
+function sma(closes: number[], period: number): number | null {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
+function rsi(closes: number[], period: number = 14): number | null {
+  if (closes.length < period + 1) return null;
+  const slice = closes.slice(-(period + 1));
+  let gains = 0, losses = 0;
+  for (let i = 1; i < slice.length; i++) {
+    const diff = slice[i] - slice[i - 1];
+    if (diff > 0) gains += diff;
+    else losses -= diff;
+  }
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+function ema(closes: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const result: number[] = [closes[0]];
+  for (let i = 1; i < closes.length; i++) {
+    result.push(closes[i] * k + result[i - 1] * (1 - k));
+  }
+  return result;
+}
+
+function macd(closes: number[], fast = 12, slow = 26, signal = 9): { macd: number | null; signal: number | null } {
+  if (closes.length < slow + signal) return { macd: null, signal: null };
+  const fastEMA = ema(closes, fast);
+  const slowEMA = ema(closes, slow);
+  const macdLine = fastEMA.map((v, i) => v - slowEMA[i]);
+  const signalLine = ema(macdLine.slice(slow - 1), signal);
+  return {
+    macd: macdLine[macdLine.length - 1],
+    signal: signalLine[signalLine.length - 1],
+  };
+}
+
+// ── Options estimate ───────────────────────────────────────
+export function estimateOptionsData(
+  ticker: string, currentPrice: number, targetPrice: number, weeksOut: number = 4
+): OptionsData {
+  // Strike: nearest $1 increment for stocks <$20, $2.50 for $20-$50, $5 for $50+
+  let strikeIncrement = 5;
+  if (currentPrice < 20) strikeIncrement = 1;
+  else if (currentPrice < 50) strikeIncrement = 2.5;
+  const strikePrice = Math.ceil(currentPrice / strikeIncrement) * strikeIncrement;
+
+  const expDate = getNextFriday(weeksOut);
+
+  // Realistic premium estimate based on price tier (approximates real IV ranges)
+  // Low-priced stocks ($3-15): ~$0.15-0.50 typical ATM premium
+  // Mid-priced ($15-50): ~$0.50-2.00
+  // Higher ($50-200): ~$1.50-5.00
+  // Based on ~30-50% IV for typical momentum stocks, simplified Black-Scholes approx
+  let ivEstimate: number;
+  if (currentPrice < 10) ivEstimate = 0.80;        // 80% IV for small speculative stocks
+  else if (currentPrice < 20) ivEstimate = 0.65;   // 65% IV
+  else if (currentPrice < 50) ivEstimate = 0.50;   // 50% IV
+  else if (currentPrice < 150) ivEstimate = 0.40;  // 40% IV
+  else ivEstimate = 0.30;                           // 30% IV for large stable stocks
+
+  // Simplified ATM call premium: S * IV * sqrt(T/365) * 0.4
+  // where T = days to expiration, 0.4 ≈ N(d1) for ATM option
+  const daysToExp = weeksOut * 7;
+  const rawPremium = currentPrice * ivEstimate * Math.sqrt(daysToExp / 365) * 0.4;
+
+  // Round to nearest $0.05 (options tick size)
+  const premium = Math.max(0.05, Math.round(rawPremium / 0.05) * 0.05);
+  const contractCost = Math.round(premium * 100);
+  const breakeven = parseFloat((strikePrice + premium).toFixed(2));
+  const upside = ((targetPrice - breakeven) / breakeven * 100).toFixed(1);
+
+  return {
+    ticker, expirationDate: expDate, strikePrice, optionType: 'CALL',
+    premium, breakeven,
+    maxGain: `~${upside}% if ${ticker} hits $${targetPrice}`,
+    maxLoss: `$${contractCost} per contract (100% of premium)`,
+    impliedVolatility: ivEstimate,
+    delta: null,
+    volume: null,
+    openInterest: null,
+    liquidityNote: '⚠️ Estimated contract — no live volume/OI data; verify liquidity in Robinhood',
+    rationale: `Buy-to-open ${ticker} $${strikePrice}C expiring ${expDate}. Cost ~$${contractCost}/contract. Breakeven at $${breakeven}.`,
+  };
+}
+
+function getNextFriday(weeksOut: number): string {
+  const date = new Date();
+  const day = date.getDay();
+  const daysToFriday = (5 - day + 7) % 7 || 7;
+  date.setDate(date.getDate() + daysToFriday + (weeksOut - 1) * 7);
+  return date.toISOString().split('T')[0];
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// ── Wide ticker universe ───────────────────────────────────
+export function getCandidateTickers(): string[] {
+  return [
+    // Mega cap tech
+    'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA',
+    // Mid-cap tech & growth
+    'AMD', 'PLTR', 'COIN', 'RBLX', 'HOOD', 'SOFI', 'AFRM',
+    'PATH', 'BILL', 'DDOG', 'NET', 'SNOW',
+    // High-beta momentum
+    'SNAP', 'UBER', 'LYFT', 'RIVN', 'LCID', 'JOBY',
+    'IONQ', 'QUBT', 'RGTI', 'BBAI',
+    // Biotech / pharma
+    'MRNA', 'NVAX', 'ACHR', 'RXRX', 'CRSP', 'BEAM', 'NTLA',
+    // Financials
+    'JPM', 'GS', 'BAC', 'UPST', 'LC',
+    // Energy
+    'XOM', 'CVX', 'OXY', 'AR',
+    // Consumer & retail
+    'NKE', 'LULU', 'ONON', 'CROX',
+    // AI / semiconductor
+    'SMCI', 'ARM', 'AVGO', 'MU', 'MRVL', 'ALAB',
+    // Small cap momentum
+    'ACMR', 'WOLF', 'LAZR', 'OUST',
+  ];
+}

@@ -1,0 +1,669 @@
+<!--
+  STOCK BOT — LOCAL DASHBOARD
+  ------------------------------------------------------------
+  Reads the two JSON files your bot already writes:
+     ./data/portfolio.json   (open + closed positions)
+     ./data/scorecard.json   (graded WIN/LOSS picks)
+
+  HOW TO RUN (important — a double-clicked file can't read the
+  JSON because browsers block local file access):
+
+     1. Put this file in your project ROOT (same folder as the
+        "data" folder and package.json).
+     2. In PowerShell, from that folder, run:
+            npx serve
+     3. Open the URL it prints (usually http://localhost:3000)
+        and click dashboard.html
+
+  LIVE PRICES (optional): paste your FMP API key in the box at
+  the top. It's stored only in THIS browser on THIS machine and
+  is used to refresh current prices every 60s so you don't have
+  to check tickers yourself. Without a key, prices shown are the
+  ones from your bot's last daily check.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Stock Bot · Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wght@400;600;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #07090d;
+    --panel: #0d1117;
+    --panel-2: #121925;
+    --line: #1e2632;
+    --line-bright: #2c3848;
+    --text: #d7dee8;
+    --muted: #6b7787;
+    --dim: #424d5c;
+    --win: #2dd4a7;
+    --win-bg: rgba(45, 212, 167, 0.08);
+    --loss: #ff5d6c;
+    --loss-bg: rgba(255, 93, 108, 0.08);
+    --watch: #f5b945;
+    --watch-bg: rgba(245, 185, 69, 0.08);
+    --active: #5aa9ff;
+    --active-bg: rgba(90, 169, 255, 0.08);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); }
+  body {
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--text);
+    min-height: 100vh;
+    padding: 28px 22px 60px;
+    background-image:
+      radial-gradient(circle at 12% 0%, rgba(45,212,167,0.05), transparent 40%),
+      radial-gradient(circle at 88% 0%, rgba(90,169,255,0.05), transparent 42%);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  /* ── Header ─────────────────────────────────────── */
+  header {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    flex-wrap: wrap; gap: 16px;
+    border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 22px;
+  }
+  .brand h1 {
+    font-family: 'Martian Mono', monospace; font-weight: 800;
+    font-size: 21px; letter-spacing: -0.04em; line-height: 1;
+    text-transform: uppercase;
+  }
+  .brand h1 .dot { color: var(--win); }
+  .brand p { color: var(--muted); font-size: 11.5px; margin-top: 7px; letter-spacing: 0.02em; }
+
+  .live-ctrl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .live-ctrl input {
+    background: var(--panel); border: 1px solid var(--line-bright); color: var(--text);
+    font-family: inherit; font-size: 11px; padding: 8px 10px; border-radius: 6px; width: 215px;
+    outline: none;
+  }
+  .live-ctrl input:focus { border-color: var(--active); }
+  .live-ctrl button {
+    background: var(--panel); border: 1px solid var(--line-bright); color: var(--text);
+    font-family: inherit; font-size: 11px; font-weight: 600; padding: 8px 14px;
+    border-radius: 6px; cursor: pointer; transition: all .15s; letter-spacing: 0.03em;
+  }
+  .live-ctrl button:hover { border-color: var(--win); color: var(--win); }
+  .live-ctrl button.on { background: var(--win-bg); border-color: var(--win); color: var(--win); }
+
+  .status-line {
+    display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted);
+    margin-bottom: 22px;
+  }
+  .pulse {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex-shrink: 0;
+  }
+  .pulse.live { background: var(--win); box-shadow: 0 0 0 0 rgba(45,212,167,.5); animation: pulse 2s infinite; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(45,212,167,.45); }
+    70% { box-shadow: 0 0 0 7px rgba(45,212,167,0); }
+    100% { box-shadow: 0 0 0 0 rgba(45,212,167,0); }
+  }
+
+  /* ── Stat strip ─────────────────────────────────── */
+  .stats {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 26px;
+  }
+  .stat {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px;
+    position: relative; overflow: hidden;
+  }
+  .stat::after {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--dim);
+  }
+  .stat.good::after { background: var(--win); }
+  .stat.bad::after { background: var(--loss); }
+  .stat.neutral::after { background: var(--active); }
+  .stat .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); }
+  .stat .value { font-family: 'Martian Mono', monospace; font-weight: 800; font-size: 27px; margin-top: 9px; letter-spacing: -0.04em; }
+  .stat .sub { font-size: 10.5px; color: var(--dim); margin-top: 5px; }
+
+  /* ── Panels ─────────────────────────────────────── */
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 22px; overflow: hidden; }
+  .panel > h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text);
+    padding: 15px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 9px;
+  }
+  .panel > h2 .count { color: var(--muted); font-weight: 400; }
+  .panel > h2 .tag { margin-left: auto; font-size: 9.5px; color: var(--dim); letter-spacing: 0.05em; text-transform: none; font-weight: 400; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead th {
+    text-align: right; font-weight: 500; color: var(--muted); font-size: 9.5px;
+    text-transform: uppercase; letter-spacing: 0.08em; padding: 10px 14px;
+    border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  thead th:first-child, tbody td:first-child { text-align: left; padding-left: 20px; }
+  tbody td { text-align: right; padding: 12px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-2); }
+  .tk { font-weight: 600; letter-spacing: 0.02em; }
+  .type { font-size: 9px; color: var(--muted); margin-top: 2px; letter-spacing: 0.05em; }
+  .num { font-variant-numeric: tabular-nums; }
+  .pos { color: var(--win); }
+  .neg { color: var(--loss); }
+  .pill {
+    display: inline-block; font-size: 9.5px; font-weight: 600; padding: 3px 8px; border-radius: 5px;
+    letter-spacing: 0.05em; text-transform: uppercase;
+  }
+  .pill.win { color: var(--win); background: var(--win-bg); }
+  .pill.loss { color: var(--loss); background: var(--loss-bg); }
+  .pill.watch { color: var(--watch); background: var(--watch-bg); }
+  .pill.active { color: var(--active); background: var(--active-bg); }
+  .pill.target { color: var(--win); background: var(--win-bg); }
+  .pill.stop { color: var(--loss); background: var(--loss-bg); }
+  .pill.range { color: var(--muted); background: rgba(107,119,135,.1); }
+
+  .bar-cell { min-width: 130px; }
+  .bar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 6px; }
+  .bar > span { display: block; height: 100%; border-radius: 3px; }
+
+  /* ── Chart cards ────────────────────────────────── */
+  .chart-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
+    gap: 12px; padding: 16px;
+  }
+  .chart-card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 11px 12px 7px; }
+  .cc-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
+  .cc-head .tk { font-size: 12.5px; }
+  .cc-head .type { display: inline; font-size: 9px; color: var(--dim); margin-left: 6px; }
+  .cc-px { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
+  .cc-svg { width: 100%; height: auto; display: block; }
+  .cc-foot { display: flex; gap: 12px; font-size: 9px; color: var(--muted); margin-top: 5px; letter-spacing: 0.03em; }
+  .cc-foot .k { display: inline-flex; align-items: center; gap: 4px; }
+  .cc-foot .swatch { width: 9px; height: 0; border-top: 2px dashed currentColor; display: inline-block; }
+  .chart-card.clickable { cursor: pointer; transition: border-color .15s, transform .15s; }
+  .chart-card.clickable:hover { border-color: var(--active); transform: translateY(-1px); }
+  tr.rowclick { cursor: pointer; }
+
+  /* ── TradingView interactive panel ──────────────── */
+  #tvHost { height: 480px; width: 100%; }
+  .tradingview-widget-container__widget { height: 100%; width: 100%; }
+  .tv-hint { padding: 30px 20px; text-align: center; color: var(--dim); font-size: 12px; }
+
+  .empty { padding: 34px 20px; text-align: center; color: var(--dim); font-size: 12px; }
+
+  /* ── Error / load box ───────────────────────────── */
+  .notice {
+    border: 1px solid var(--line-bright); background: var(--panel-2); border-radius: 10px;
+    padding: 18px 20px; font-size: 12px; color: var(--muted); line-height: 1.7; margin-bottom: 22px;
+  }
+  .notice b { color: var(--text); }
+  .notice code { background: #000; color: var(--win); padding: 2px 7px; border-radius: 4px; font-size: 11.5px; }
+  .notice.hidden { display: none; }
+  footer { color: var(--dim); font-size: 10.5px; text-align: center; margin-top: 36px; letter-spacing: 0.04em; }
+  @media (max-width: 720px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <h1>STOCK&nbsp;BOT<span class="dot">.</span></h1>
+      <p>Pick tracker &amp; weekly results</p>
+    </div>
+    <div class="live-ctrl">
+      <input id="fmpKey" type="password" placeholder="FMP API key for live prices (optional)" autocomplete="off" />
+      <button id="liveBtn">○ Live: off</button>
+      <button id="refreshBtn">↻ Refresh</button>
+    </div>
+  </header>
+
+  <div class="status-line">
+    <span class="pulse" id="pulse"></span>
+    <span id="statusText">Loading data…</span>
+  </div>
+
+  <div class="notice hidden" id="notice"></div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="panel">
+    <h2>Open positions <span class="count" id="openCount"></span>
+      <span class="tag">live vs. target / stop on the underlying stock</span></h2>
+    <div id="openWrap"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Charts <span class="count" id="chartCount"></span>
+      <span class="tag">3-month daily close · target / stop / entry drawn on</span></h2>
+    <div id="chartWrap"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Live chart <span class="count" id="tvSymbol"></span>
+      <span class="tag">interactive · click any ticker above to load it here</span></h2>
+    <div id="tvHost" class="tradingview-widget-container"></div>
+  </div>
+
+  <div class="panel">
+    <h2>P&amp;L per pick <span class="count" id="pnlCount"></span>
+      <span class="tag">stock move from entry — not option P&amp;L</span></h2>
+    <div id="pnlWrap"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Results — did they hit? <span class="count" id="resCount"></span>
+      <span class="tag">graded ≥5 days after pick</span></h2>
+    <div id="resWrap"></div>
+  </div>
+
+  <footer id="foot">—</footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const KEY_STORE = "stockbot_fmp_key";
+  const LIVE_STORE = "stockbot_live_on";
+  const REFRESH_MS = 60000;
+
+  let portfolio = [];
+  let graded = [];
+  let history = {};          // ticker -> { dates, closes }
+  let liveOn = false;
+  let livePrices = {};       // ticker -> current price
+  let timer = null;
+  let lastUpdated = null;
+
+  const $ = (id) => document.getElementById(id);
+
+  // ---- helpers ----------------------------------------------------------
+  const fmtMoney = (n) => (n == null || isNaN(n)) ? "—" : "$" + Number(n).toFixed(2);
+  const fmtPct = (n) => (n == null || isNaN(n)) ? "—" : (n >= 0 ? "+" : "") + Number(n).toFixed(1) + "%";
+  const cls = (n) => n > 0 ? "pos" : n < 0 ? "neg" : "";
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  const typeLabel = (t) => t === "OPTIONS_CALL" ? "OPTIONS" : "STOCK";
+
+  // current price for a position: live if we have it, else the bot's saved value
+  function priceOf(p) {
+    const lp = livePrices[p.ticker];
+    return (liveOn && lp != null) ? lp : p.currentPrice;
+  }
+
+  // ---- data loading -----------------------------------------------------
+  async function loadJSON(path) {
+    const res = await fetch(path + "?t=" + Date.now(), { cache: "no-store" });
+    if (!res.ok) throw new Error(path + " → " + res.status);
+    return res.json();
+  }
+
+  async function loadAll() {
+    try {
+      const [pf, sc, hi] = await Promise.all([
+        loadJSON("data/portfolio.json").catch(() => []),
+        loadJSON("data/scorecard.json").catch(() => ({ graded: [] })),
+        loadJSON("data/history.json").catch(() => ({ data: {} })),
+      ]);
+      portfolio = Array.isArray(pf) ? pf : [];
+      graded = (sc && Array.isArray(sc.graded)) ? sc.graded : [];
+      history = (hi && hi.data) ? hi.data : (hi && typeof hi === "object" ? hi : {});
+      hideNotice();
+    } catch (e) {
+      showLoadError();
+      return;
+    }
+    if (liveOn) await fetchLive();
+    lastUpdated = new Date();
+    render();
+  }
+
+  // ---- live prices via FMP ---------------------------------------------
+  async function fetchLive() {
+    const key = $("fmpKey").value.trim();
+    if (!key) return;
+    const tickers = [...new Set(portfolio
+      .filter(p => p.status !== "CLOSED")
+      .map(p => p.ticker))];
+    if (tickers.length === 0) return;
+    try {
+      const url = "https://financialmodelingprep.com/api/v3/quote/" +
+        encodeURIComponent(tickers.join(",")) + "?apikey=" + encodeURIComponent(key);
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error("quote " + res.status);
+      const data = await res.json();
+      if (!Array.isArray(data)) throw new Error("bad response");
+      const next = {};
+      data.forEach(q => { if (q && q.symbol) next[q.symbol] = q.price; });
+      livePrices = next;
+    } catch (e) {
+      setStatus("Live fetch failed — check the key (or CORS). Showing bot's last saved prices.", false);
+    }
+  }
+
+  // ---- rendering --------------------------------------------------------
+  function render() {
+    renderStats();
+    renderOpen();
+    renderCharts();
+    renderPnl();
+    renderResults();
+    renderStatus();
+    ensureDefaultTV();
+  }
+
+  function renderStats() {
+    const closed = graded.filter(g => g.outcome !== "OPEN");
+    const wins = closed.filter(g => g.outcome === "WIN").length;
+    const losses = closed.filter(g => g.outcome === "LOSS").length;
+    const total = wins + losses;
+    const winRate = total ? (wins / total) * 100 : 0;
+    const avgRet = total ? closed.reduce((s, g) => s + (g.stockReturnPct || 0), 0) / total : 0;
+    const open = portfolio.filter(p => p.status !== "CLOSED").length;
+
+    const wrCls = total === 0 ? "neutral" : winRate >= 50 ? "good" : "bad";
+    $("stats").innerHTML = `
+      <div class="stat ${wrCls}">
+        <div class="label">Win rate</div>
+        <div class="value num">${total ? winRate.toFixed(0) + "%" : "—"}</div>
+        <div class="sub">${total} graded pick${total === 1 ? "" : "s"}</div>
+      </div>
+      <div class="stat ${total === 0 ? "neutral" : "good"}">
+        <div class="label">Record</div>
+        <div class="value num">${wins}<span style="color:var(--dim)">–</span>${losses}</div>
+        <div class="sub">wins – losses</div>
+      </div>
+      <div class="stat ${avgRet >= 0 ? "good" : "bad"}">
+        <div class="label">Avg stock move</div>
+        <div class="value num ${cls(avgRet)}">${total ? fmtPct(avgRet) : "—"}</div>
+        <div class="sub">underlying, per graded pick</div>
+      </div>
+      <div class="stat neutral">
+        <div class="label">Open now</div>
+        <div class="value num">${open}</div>
+        <div class="sub">watching + active</div>
+      </div>`;
+  }
+
+  function levelState(p) {
+    const price = priceOf(p);
+    if (price == null) return { pill: '<span class="pill range">—</span>', sort: 0 };
+    if (price >= p.targetPrice) return { pill: '<span class="pill target">Hit target</span>', sort: 2 };
+    if (price <= p.stopLoss) return { pill: '<span class="pill stop">Hit stop</span>', sort: -2 };
+    return { pill: '<span class="pill range">In range</span>', sort: 1 };
+  }
+
+  function renderOpen() {
+    const open = portfolio.filter(p => p.status !== "CLOSED");
+    $("openCount").textContent = open.length ? "(" + open.length + ")" : "";
+    if (!open.length) { $("openWrap").innerHTML = `<div class="empty">No open positions. Run the bot to add picks.</div>`; return; }
+
+    open.sort((a, b) => levelState(b).sort - levelState(a).sort);
+    const rows = open.map(p => {
+      const price = priceOf(p);
+      const pnl = (price != null && p.entryPrice) ? ((price - p.entryPrice) / p.entryPrice) * 100 : null;
+      const toTarget = (price != null) ? ((p.targetPrice - price) / price) * 100 : null;
+      const stPill = p.status === "ACTIVE"
+        ? '<span class="pill active">Active</span>'
+        : '<span class="pill watch">Watching</span>';
+      return `<tr data-tk="${esc(p.ticker)}" class="rowclick">
+        <td><div class="tk">${esc(p.ticker)}</div><div class="type">${typeLabel(p.pickType)}</div></td>
+        <td>${stPill}</td>
+        <td class="num">${fmtMoney(p.entryPrice)}</td>
+        <td class="num">${fmtMoney(price)}</td>
+        <td class="num">${fmtMoney(p.targetPrice)}</td>
+        <td class="num">${fmtMoney(p.stopLoss)}</td>
+        <td class="num ${cls(pnl)}">${fmtPct(pnl)}</td>
+        <td class="num" style="color:var(--muted)">${toTarget == null ? "—" : fmtPct(toTarget) + " away"}</td>
+        <td>${levelState(p).pill}</td>
+      </tr>`;
+    }).join("");
+    $("openWrap").innerHTML = table(
+      ["Ticker", "Status", "Entry", "Now", "Target", "Stop", "P&L", "To target", "Level"], rows);
+  }
+
+  function renderCharts() {
+    const open = portfolio.filter(p => p.status !== "CLOSED");
+    const withHist = open.filter(p => {
+      const h = history[p.ticker];
+      return h && Array.isArray(h.closes) && h.closes.length > 1;
+    });
+    $("chartCount").textContent = withHist.length ? "(" + withHist.length + ")" : "";
+
+    if (!withHist.length) {
+      const reason = open.length
+        ? `No chart data yet. Run the bot so it writes <code style="color:var(--win)">data/history.json</code> (see the chartData module).`
+        : `No open positions to chart.`;
+      $("chartWrap").innerHTML = `<div class="empty">${reason}</div>`;
+      return;
+    }
+    $("chartWrap").innerHTML =
+      `<div class="chart-grid">` + withHist.map(p => chartCard(p, history[p.ticker])).join("") + `</div>`;
+  }
+
+  function chartCard(p, series) {
+    const closes = series.closes.slice();
+    const last = closes[closes.length - 1];
+    const livePx = priceOf(p);
+    // If live mode has a fresher price, tack it on as today's point.
+    const pts = closes.slice();
+    if (liveOn && livePx != null && Math.abs(livePx - last) > 1e-6) pts.push(livePx);
+
+    const W = 300, H = 150, padL = 8, padR = 54, padT = 12, padB = 16;
+    const levels = [
+      { v: p.targetPrice, c: "var(--win)",  label: "TGT " + fmtMoney(p.targetPrice) },
+      { v: p.stopLoss,    c: "var(--loss)", label: "STP " + fmtMoney(p.stopLoss) },
+      { v: p.entryPrice,  c: "var(--muted)", label: "ENT " + fmtMoney(p.entryPrice) },
+    ].filter(l => l.v != null && !isNaN(l.v));
+
+    const lo = Math.min(...pts, ...levels.map(l => l.v));
+    const hi = Math.max(...pts, ...levels.map(l => l.v));
+    const span = (hi - lo) || 1;
+    const X = i => padL + (i / (pts.length - 1)) * (W - padL - padR);
+    const Y = v => padT + (1 - (v - lo) / span) * (H - padT - padB);
+
+    const linePath = pts.map((v, i) => (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1)).join(" ");
+    const areaPath = "M" + X(0).toFixed(1) + " " + (H - padB).toFixed(1) + " " +
+      pts.map((v, i) => "L" + X(i).toFixed(1) + " " + Y(v).toFixed(1)).join(" ") +
+      " L" + X(pts.length - 1).toFixed(1) + " " + (H - padB).toFixed(1) + " Z";
+
+    const up = (livePx != null ? livePx : last) >= p.entryPrice;
+    const lineColor = up ? "var(--win)" : "var(--loss)";
+    const gid = "g_" + String(p.ticker).replace(/[^a-z0-9]/gi, "");
+
+    const levelSvg = levels.map(l => {
+      const yy = Y(l.v).toFixed(1);
+      return `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="${l.c}" stroke-width="1" stroke-dasharray="3 3" opacity="0.5"/>` +
+             `<text x="${W - padR + 4}" y="${yy}" dy="3" fill="${l.c}" font-size="8.5">${esc(l.label)}</text>`;
+    }).join("");
+
+    // marker dot on the latest point
+    const lx = X(pts.length - 1).toFixed(1), ly = Y(pts[pts.length - 1]).toFixed(1);
+
+    const pnl = (livePx != null && p.entryPrice) ? ((livePx - p.entryPrice) / p.entryPrice) * 100 : null;
+
+    return `<div class="chart-card clickable" data-tk="${esc(p.ticker)}">
+      <div class="cc-head">
+        <span><span class="tk">${esc(p.ticker)}</span><span class="type">${typeLabel(p.pickType)}</span></span>
+        <span class="cc-px">${fmtMoney(livePx)} <span class="${cls(pnl)}">${pnl == null ? "" : fmtPct(pnl)}</span></span>
+      </div>
+      <svg viewBox="0 0 ${W} ${H}" class="cc-svg" font-family="IBM Plex Mono, monospace">
+        <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stop-color="${lineColor}" stop-opacity="0.20"/>
+          <stop offset="100%" stop-color="${lineColor}" stop-opacity="0"/>
+        </linearGradient></defs>
+        <path d="${areaPath}" fill="url(#${gid})"/>
+        ${levelSvg}
+        <path d="${linePath}" fill="none" stroke="${lineColor}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="${lx}" cy="${ly}" r="2.4" fill="${lineColor}"/>
+      </svg>
+      <div class="cc-foot">
+        <span class="k" style="color:var(--win)"><span class="swatch"></span>target</span>
+        <span class="k" style="color:var(--loss)"><span class="swatch"></span>stop</span>
+        <span class="k" style="color:var(--muted)"><span class="swatch"></span>entry</span>
+      </div>
+    </div>`;
+  }
+
+  function renderPnl() {
+    const open = portfolio.filter(p => p.status !== "CLOSED");
+    $("pnlCount").textContent = open.length ? "(" + open.length + ")" : "";
+    if (!open.length) { $("pnlWrap").innerHTML = `<div class="empty">Nothing to show yet.</div>`; return; }
+
+    const withPnl = open.map(p => {
+      const price = priceOf(p);
+      const pnl = (price != null && p.entryPrice) ? ((price - p.entryPrice) / p.entryPrice) * 100 : 0;
+      return { p, pnl };
+    }).sort((a, b) => b.pnl - a.pnl);
+
+    const maxAbs = Math.max(5, ...withPnl.map(x => Math.abs(x.pnl)));
+    const rows = withPnl.map(({ p, pnl }) => {
+      const w = Math.min(100, (Math.abs(pnl) / maxAbs) * 100);
+      const color = pnl >= 0 ? "var(--win)" : "var(--loss)";
+      return `<tr>
+        <td><div class="tk">${esc(p.ticker)}</div><div class="type">${typeLabel(p.pickType)}</div></td>
+        <td class="num ${cls(pnl)}">${fmtPct(pnl)}</td>
+        <td class="bar-cell"><div class="bar"><span style="width:${w}%;background:${color}"></span></div></td>
+      </tr>`;
+    }).join("");
+    $("pnlWrap").innerHTML = table(["Ticker", "Stock move", ""], rows);
+  }
+
+  function renderResults() {
+    const closed = graded.filter(g => g.outcome !== "OPEN")
+      .slice().sort((a, b) => new Date(b.gradedDate) - new Date(a.gradedDate));
+    $("resCount").textContent = closed.length ? "(" + closed.length + ")" : "";
+    if (!closed.length) {
+      $("resWrap").innerHTML = `<div class="empty">No graded picks yet — they grade 5 days after being picked.</div>`;
+      return;
+    }
+    const rows = closed.map(g => {
+      const pill = g.outcome === "WIN" ? '<span class="pill win">Win</span>' : '<span class="pill loss">Loss</span>';
+      const d = new Date(g.pickedDate);
+      const dStr = isNaN(d) ? "—" : (d.getMonth() + 1) + "/" + d.getDate();
+      return `<tr>
+        <td><div class="tk">${esc(g.ticker)}</div><div class="type">${typeLabel(g.pickType)}</div></td>
+        <td>${pill}</td>
+        <td class="num">${fmtMoney(g.entryPrice)}</td>
+        <td class="num">${fmtMoney(g.finalPrice)}</td>
+        <td class="num ${cls(g.stockReturnPct)}">${fmtPct(g.stockReturnPct)}</td>
+        <td style="color:var(--muted);text-align:right">${esc(g.note || "")}</td>
+        <td class="num" style="color:var(--dim)">${dStr}</td>
+      </tr>`;
+    }).join("");
+    $("resWrap").innerHTML = table(
+      ["Ticker", "Outcome", "Entry", "Final", "Stock move", "Note", "Picked"], rows);
+  }
+
+  function table(headers, rows) {
+    return `<table><thead><tr>${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  function renderStatus() {
+    const t = lastUpdated ? lastUpdated.toLocaleTimeString() : "—";
+    const mode = liveOn ? "Live prices on" : "Showing bot's last saved prices";
+    setStatus(`${mode} · updated ${t}`, liveOn);
+    $("foot").textContent = liveOn
+      ? "Live mode · auto-refresh every 60s · prices from FMP"
+      : "Static mode · prices update when the bot runs its daily check";
+  }
+
+  function setStatus(text, live) {
+    $("statusText").textContent = text;
+    $("pulse").className = "pulse" + (live ? " live" : "");
+  }
+
+  // ---- interactive TradingView chart -----------------------------------
+  let tvSymbol = null;
+
+  function loadTVChart(symbol) {
+    if (!symbol) return;
+    const host = $("tvHost");
+    host.innerHTML = ""; // rebuild — the embed widget can't swap symbol in place
+
+    const widget = document.createElement("div");
+    widget.className = "tradingview-widget-container__widget";
+    host.appendChild(widget);
+
+    const script = document.createElement("script");
+    script.type = "text/javascript";
+    script.async = true;
+    script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+    script.innerHTML = JSON.stringify({
+      autosize: true,
+      symbol: symbol,
+      interval: "D",
+      timezone: "America/New_York",
+      theme: "dark",
+      style: "1",
+      locale: "en",
+      enable_publishing: false,
+      allow_symbol_change: true,
+      hide_side_toolbar: false,
+      backgroundColor: "rgba(13,17,23,1)",
+      gridColor: "rgba(30,38,50,1)",
+      support_host: "https://www.tradingview.com"
+    });
+    host.appendChild(script);
+
+    tvSymbol = symbol;
+    $("tvSymbol").textContent = "· " + symbol;
+  }
+
+  // Load a sensible default once (first open ticker, else SPY). Guarded so
+  // the 60s auto-refresh never resets a chart you're interacting with.
+  function ensureDefaultTV() {
+    if (tvSymbol) return;
+    const open = portfolio.filter(p => p.status !== "CLOSED");
+    loadTVChart(open.length ? open[0].ticker : "SPY");
+  }
+
+  // ---- notices ----------------------------------------------------------
+  function showLoadError() {
+    const n = $("notice");
+    n.classList.remove("hidden");
+    n.innerHTML = `<b>Couldn't read your data files.</b> This almost always means the page was opened
+      by double-clicking it (browsers block local file reads). Fix it in 30 seconds:<br><br>
+      1. Put <code>dashboard.html</code> in your project root (next to the <b>data</b> folder).<br>
+      2. From that folder run <code>npx serve</code><br>
+      3. Open the printed URL (e.g. <code>http://localhost:3000</code>) and click dashboard.html.<br><br>
+      It also shows this if the bot hasn't created <code>data/portfolio.json</code> yet — run a scan first.`;
+    setStatus("Data not loaded", false);
+  }
+  function hideNotice() { $("notice").classList.add("hidden"); }
+
+  // ---- live toggle ------------------------------------------------------
+  function setLive(on) {
+    liveOn = on;
+    localStorage.setItem(LIVE_STORE, on ? "1" : "0");
+    const btn = $("liveBtn");
+    btn.textContent = (on ? "● Live: on" : "○ Live: off");
+    btn.className = on ? "on" : "";
+    if (timer) { clearInterval(timer); timer = null; }
+    if (on) timer = setInterval(loadAll, REFRESH_MS);
+    loadAll();
+  }
+
+  // ---- init -------------------------------------------------------------
+  $("fmpKey").value = localStorage.getItem(KEY_STORE) || "";
+  $("fmpKey").addEventListener("change", () => localStorage.setItem(KEY_STORE, $("fmpKey").value.trim()));
+  $("liveBtn").addEventListener("click", () => setLive(!liveOn));
+  $("refreshBtn").addEventListener("click", loadAll);
+
+  // Click any chart card or open-position row to load it in the big chart.
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest("[data-tk]");
+    if (!el) return;
+    const tk = el.getAttribute("data-tk");
+    if (tk) {
+      loadTVChart(tk);
+      $("tvHost").scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  });
+
+  const savedLive = localStorage.getItem(LIVE_STORE) === "1";
+  if (savedLive && ($("fmpKey").value)) setLive(true);
+  else loadAll();
+})();
+</script>
+</body>
+</html>

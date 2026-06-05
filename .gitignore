@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.log
+picks_history.json
+positions.json
+
+data/
