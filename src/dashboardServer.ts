@@ -4,7 +4,6 @@
 // no extra npm install needed.
 // ============================================================
 
-import 'dotenv/config';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
@@ -64,7 +63,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(403); res.end('Forbidden'); return;
   }
 
-  fs.readFile(filePath, (err, data) => {
+  fs.readFile(filePath, (err, rawData) => {
     if (err) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not found: ' + urlPath);
@@ -72,8 +71,19 @@ const server = http.createServer((req, res) => {
     }
     const ext  = path.extname(filePath);
     const mime = MIME[ext] || 'application/octet-stream';
+
+    // Inject FMP key so it's pre-filled on every device automatically.
+    // The key never appears in the repo — it comes from .env at serve time.
+    if (urlPath === '/dashboard.html') {
+      const fmpKey = (process.env.FMP_API_KEY || '').replace(/"/g, '\\"');
+      const html = rawData.toString('utf8').replace('__FMP_INJECT__', fmpKey);
+      res.writeHead(200, { 'Content-Type': mime });
+      res.end(html);
+      return;
+    }
+
     res.writeHead(200, { 'Content-Type': mime });
-    res.end(data);
+    res.end(rawData);
   });
 });
 

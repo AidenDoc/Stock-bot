@@ -644,7 +644,7 @@
   }
 
   // ---- init -------------------------------------------------------------
-  $("fmpKey").value = localStorage.getItem(KEY_STORE) || "";
+  $("fmpKey").value = "__FMP_INJECT__" || localStorage.getItem(KEY_STORE) || "";
   $("fmpKey").addEventListener("change", () => localStorage.setItem(KEY_STORE, $("fmpKey").value.trim()));
   $("liveBtn").addEventListener("click", () => setLive(!liveOn));
   $("refreshBtn").addEventListener("click", loadAll);
