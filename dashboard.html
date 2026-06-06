@@ -80,14 +80,14 @@
   .live-ctrl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .live-ctrl input {
     background: var(--panel); border: 1px solid var(--line-bright); color: var(--text);
-    font-family: inherit; font-size: 11px; padding: 8px 10px; border-radius: 6px; width: 215px;
-    outline: none;
+    font-family: inherit; font-size: 11px; padding: 9px 12px; border-radius: 999px; width: 215px;
+    outline: none; transition: border-color .2s ease;
   }
   .live-ctrl input:focus { border-color: var(--active); }
   .live-ctrl button {
     background: var(--panel); border: 1px solid var(--line-bright); color: var(--text);
-    font-family: inherit; font-size: 11px; font-weight: 600; padding: 8px 14px;
-    border-radius: 6px; cursor: pointer; transition: all .15s; letter-spacing: 0.03em;
+    font-family: inherit; font-size: 11px; font-weight: 600; padding: 9px 16px;
+    border-radius: 999px; cursor: pointer; transition: all .2s ease; letter-spacing: 0.03em;
   }
   .live-ctrl button:hover { border-color: var(--win); color: var(--win); }
   .live-ctrl button.on { background: var(--win-bg); border-color: var(--win); color: var(--win); }
@@ -111,11 +111,14 @@
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 26px;
   }
   .stat {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px;
-    position: relative; overflow: hidden;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px;
+    position: relative; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+    transition: transform .2s ease, box-shadow .2s ease;
   }
+  .stat:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(0,0,0,0.35); }
   .stat::after {
-    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--dim);
+    content: ''; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--dim);
   }
   .stat.good::after { background: var(--win); }
   .stat.bad::after { background: var(--loss); }
@@ -125,10 +128,13 @@
   .stat .sub { font-size: 10.5px; color: var(--dim); margin-top: 5px; }
 
   /* ── Panels ─────────────────────────────────────── */
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 22px; overflow: hidden; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+    margin-bottom: 20px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.22);
+  }
   .panel > h2 {
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text);
-    padding: 15px 20px; border-bottom: 1px solid var(--line);
+    padding: 16px 22px; border-bottom: 1px solid rgba(255,255,255,0.04);
     display: flex; align-items: center; gap: 9px;
   }
   .panel > h2 .count { color: var(--muted); font-weight: 400; }
@@ -138,19 +144,20 @@
   thead th {
     text-align: right; font-weight: 500; color: var(--muted); font-size: 9.5px;
     text-transform: uppercase; letter-spacing: 0.08em; padding: 10px 14px;
-    border-bottom: 1px solid var(--line); white-space: nowrap;
+    border-bottom: 1px solid rgba(255,255,255,0.04); white-space: nowrap;
   }
-  thead th:first-child, tbody td:first-child { text-align: left; padding-left: 20px; }
-  tbody td { text-align: right; padding: 12px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  thead th:first-child, tbody td:first-child { text-align: left; padding-left: 22px; }
+  tbody td { text-align: right; padding: 13px 14px; border-bottom: 1px solid rgba(255,255,255,0.03); white-space: nowrap; }
   tbody tr:last-child td { border-bottom: none; }
-  tbody tr:hover { background: var(--panel-2); }
+  tbody tr { transition: background .15s ease; }
+  tbody tr:hover { background: rgba(255,255,255,0.025); }
   .tk { font-weight: 600; letter-spacing: 0.02em; }
   .type { font-size: 9px; color: var(--muted); margin-top: 2px; letter-spacing: 0.05em; }
   .num { font-variant-numeric: tabular-nums; }
   .pos { color: var(--win); }
   .neg { color: var(--loss); }
   .pill {
-    display: inline-block; font-size: 9.5px; font-weight: 600; padding: 3px 8px; border-radius: 5px;
+    display: inline-block; font-size: 9.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
     letter-spacing: 0.05em; text-transform: uppercase;
   }
   .pill.win { color: var(--win); background: var(--win-bg); }
@@ -168,9 +175,9 @@
   /* ── Chart cards ────────────────────────────────── */
   .chart-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
-    gap: 12px; padding: 16px;
+    gap: 14px; padding: 18px;
   }
-  .chart-card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 11px 12px 7px; }
+  .chart-card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; padding: 13px 14px 9px; box-shadow: 0 2px 12px rgba(0,0,0,0.18); }
   .cc-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
   .cc-head .tk { font-size: 12.5px; }
   .cc-head .type { display: inline; font-size: 9px; color: var(--dim); margin-left: 6px; }
@@ -179,16 +186,23 @@
   .cc-foot { display: flex; gap: 12px; font-size: 9px; color: var(--muted); margin-top: 5px; letter-spacing: 0.03em; }
   .cc-foot .k { display: inline-flex; align-items: center; gap: 4px; }
   .cc-foot .swatch { width: 9px; height: 0; border-top: 2px dashed currentColor; display: inline-block; }
-  .chart-card.clickable { cursor: pointer; transition: border-color .15s, transform .15s; }
-  .chart-card.clickable:hover { border-color: var(--active); transform: translateY(-1px); }
+  .chart-card.clickable { cursor: pointer; transition: border-color .2s ease, transform .2s ease, box-shadow .2s ease; }
+  .chart-card.clickable:hover { border-color: var(--active); transform: translateY(-2px); box-shadow: 0 8px 22px rgba(0,0,0,0.3); }
   tr.rowclick { cursor: pointer; }
 
   /* ── TradingView interactive panel ──────────────── */
-  #tvHost { height: 480px; width: 100%; }
+  #tvHost { height: 680px; width: 100%; }
   .tradingview-widget-container__widget { height: 100%; width: 100%; }
   .tv-hint { padding: 30px 20px; text-align: center; color: var(--dim); font-size: 12px; }
 
   .empty { padding: 34px 20px; text-align: center; color: var(--dim); font-size: 12px; }
+
+  /* ── Group labels (Options / Stock split) ───────── */
+  .group-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--active);
+    padding: 16px 22px 6px; font-weight: 600;
+  }
+  .group-label span { color: var(--dim); font-weight: 400; }
 
   /* ── Error / load box ───────────────────────────── */
   .notice {
@@ -392,33 +406,44 @@
     return { pill: '<span class="pill range">In range</span>', sort: 1 };
   }
 
+  function openRow(p) {
+    const price = priceOf(p);
+    const pnl = (price != null && p.entryPrice) ? ((price - p.entryPrice) / p.entryPrice) * 100 : null;
+    const toTarget = (price != null) ? ((p.targetPrice - price) / price) * 100 : null;
+    const stPill = p.status === "ACTIVE"
+      ? '<span class="pill active">Active</span>'
+      : '<span class="pill watch">Watching</span>';
+    return `<tr data-tk="${esc(p.ticker)}" class="rowclick">
+      <td><div class="tk">${esc(p.ticker)}</div></td>
+      <td>${stPill}</td>
+      <td class="num">${fmtMoney(p.entryPrice)}</td>
+      <td class="num">${fmtMoney(price)}</td>
+      <td class="num">${fmtMoney(p.targetPrice)}</td>
+      <td class="num">${fmtMoney(p.stopLoss)}</td>
+      <td class="num ${cls(pnl)}">${fmtPct(pnl)}</td>
+      <td class="num" style="color:var(--muted)">${toTarget == null ? "—" : fmtPct(toTarget) + " away"}</td>
+      <td>${levelState(p).pill}</td>
+    </tr>`;
+  }
+
+  function openGroup(title, list) {
+    if (!list.length) return "";
+    list.sort((a, b) => levelState(b).sort - levelState(a).sort);
+    const rows = list.map(openRow).join("");
+    return `<div class="group-label">${title} <span>(${list.length})</span></div>` +
+      table(["Ticker", "Status", "Entry", "Now", "Target", "Stop", "P&L", "To target", "Level"], rows);
+  }
+
   function renderOpen() {
     const open = portfolio.filter(p => p.status !== "CLOSED");
     $("openCount").textContent = open.length ? "(" + open.length + ")" : "";
     if (!open.length) { $("openWrap").innerHTML = `<div class="empty">No open positions. Run the bot to add picks.</div>`; return; }
 
-    open.sort((a, b) => levelState(b).sort - levelState(a).sort);
-    const rows = open.map(p => {
-      const price = priceOf(p);
-      const pnl = (price != null && p.entryPrice) ? ((price - p.entryPrice) / p.entryPrice) * 100 : null;
-      const toTarget = (price != null) ? ((p.targetPrice - price) / price) * 100 : null;
-      const stPill = p.status === "ACTIVE"
-        ? '<span class="pill active">Active</span>'
-        : '<span class="pill watch">Watching</span>';
-      return `<tr data-tk="${esc(p.ticker)}" class="rowclick">
-        <td><div class="tk">${esc(p.ticker)}</div><div class="type">${typeLabel(p.pickType)}</div></td>
-        <td>${stPill}</td>
-        <td class="num">${fmtMoney(p.entryPrice)}</td>
-        <td class="num">${fmtMoney(price)}</td>
-        <td class="num">${fmtMoney(p.targetPrice)}</td>
-        <td class="num">${fmtMoney(p.stopLoss)}</td>
-        <td class="num ${cls(pnl)}">${fmtPct(pnl)}</td>
-        <td class="num" style="color:var(--muted)">${toTarget == null ? "—" : fmtPct(toTarget) + " away"}</td>
-        <td>${levelState(p).pill}</td>
-      </tr>`;
-    }).join("");
-    $("openWrap").innerHTML = table(
-      ["Ticker", "Status", "Entry", "Now", "Target", "Stop", "P&L", "To target", "Level"], rows);
+    const options = open.filter(p => p.pickType === "OPTIONS_CALL");
+    const stocks  = open.filter(p => p.pickType !== "OPTIONS_CALL");
+    $("openWrap").innerHTML =
+      openGroup("Options calls", options) +
+      openGroup("Stock picks", stocks);
   }
 
   function renderCharts() {
