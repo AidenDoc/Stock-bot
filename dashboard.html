@@ -605,8 +605,15 @@
     const host = $("tvHost");
     host.innerHTML = ""; // rebuild — the embed widget can't swap symbol in place
 
+    // Measure the container's real height and hand it to the widget as an
+    // explicit number. autosize alone doesn't stretch the iframe reliably,
+    // which left the chart drawing only in the top strip.
+    const h = Math.max(760, host.clientHeight || 0);
+
     const widget = document.createElement("div");
     widget.className = "tradingview-widget-container__widget";
+    widget.style.height = h + "px";
+    widget.style.width = "100%";
     host.appendChild(widget);
 
     const script = document.createElement("script");
@@ -614,7 +621,9 @@
     script.async = true;
     script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
     script.innerHTML = JSON.stringify({
-      autosize: true,
+      autosize: false,
+      width: "100%",
+      height: h,
       symbol: symbol,
       interval: "D",
       timezone: "America/New_York",
