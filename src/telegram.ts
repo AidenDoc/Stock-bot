@@ -4,8 +4,13 @@
 
 import TelegramBot from 'node-telegram-bot-api';
 import { StockPick, WeeklyReport, DailyUpdate, NewsArticle } from './types';
+import fs from 'fs';
+import path from 'path';
 
 let bot: TelegramBot;
+
+const PORTFOLIO_FILE = path.join(process.cwd(), 'data', 'portfolio.json');
+const SCORECARD_FILE = path.join(process.cwd(), 'data', 'scorecard.json');
 
 export function initTelegram(): TelegramBot {
   const token = process.env.STOCK_TELEGRAM_BOT_TOKEN!;
@@ -18,6 +23,15 @@ function getChatId(): string {
   return process.env.STOCK_TELEGRAM_CHAT_ID!;
 }
 
+function loadJSON<T>(file: string, fallback: T): T {
+  try {
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, 'utf-8'));
+  } catch {
+    return fallback;
+  }
+}
+
 async function send(message: string, parseMode: 'HTML' | 'Markdown' = 'HTML'): Promise<void> {
   try {
     await bot.sendMessage(getChatId(), message, {
@@ -28,6 +42,105 @@ async function send(message: string, parseMode: 'HTML' | 'Markdown' = 'HTML'): P
   } catch (err: any) {
     console.error('[Telegram] Send error:', err?.message);
   }
+}
+
+// Reply to a specific chat (used by command handlers)
+async function reply(chatId: number | string, message: string): Promise<void> {
+  try {
+    await bot.sendMessage(chatId, message, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: false, // allow the dashboard link preview
+    });
+  } catch (err: any) {
+    console.error('[Telegram] Reply error:', err?.message);
+  }
+}
+
+// ── Command listener ────────────────────────────────────────
+// Call this ONLY from the long-running daemon (not from one-off
+// CLI runs) so two pollers never fight over the same bot token.
+export function registerCommands(): void {
+  const ownerId = String(getChatId());
+  const dashUrl = process.env.DASHBOARD_URL || 'http://159.223.189.172:8080';
+
+  bot.startPolling();
+
+  bot.onText(/^\/(start|help)/, async (msg) => {
+    if (String(msg.chat.id) !== ownerId) return;
+    await reply(msg.chat.id, [
+      '🤖 <b>Stock Bot — Commands</b>',
+      '',
+      '/dashboard — open your live dashboard',
+      '/open — current open picks',
+      '/record — win / loss record',
+      '/help — this list',
+    ].join('\n'));
+  });
+
+  bot.onText(/^\/dashboard/, async (msg) => {
+    if (String(msg.chat.id) !== ownerId) return;
+    await reply(msg.chat.id, [
+      '📊 <b>Your live dashboard</b>',
+      '',
+      `<a href="${dashUrl}">${dashUrl}</a>`,
+      '',
+      'Tap to open, then log in with your dashboard username and password.',
+    ].join('\n'));
+  });
+
+  bot.onText(/^\/open/, async (msg) => {
+    if (String(msg.chat.id) !== ownerId) return;
+    const pf = loadJSON<any[]>(PORTFOLIO_FILE, []);
+    const open = (Array.isArray(pf) ? pf : []).filter(p => p.status !== 'CLOSED');
+    if (open.length === 0) {
+      await reply(msg.chat.id, '📭 <b>Open positions</b>\n\nNone right now. The next scan runs Monday 8:00 AM ET.');
+      return;
+    }
+    const fmtLine = (p: any) => {
+      const px = p.currentPrice ?? p.entryPrice;
+      const pnl = p.entryPrice ? ((px - p.entryPrice) / p.entryPrice) * 100 : 0;
+      const dot = pnl >= 0 ? '🟢' : '🔴';
+      const sign = pnl >= 0 ? '+' : '';
+      return `${dot} <b>${p.ticker}</b> ${sign}${pnl.toFixed(1)}% — $${Number(px).toFixed(2)} (tgt $${Number(p.targetPrice).toFixed(2)})`;
+    };
+    const opts = open.filter(p => p.pickType === 'OPTIONS_CALL');
+    const stocks = open.filter(p => p.pickType !== 'OPTIONS_CALL');
+    const lines = ['📌 <b>Open positions</b>', ''];
+    if (opts.length) { lines.push('<b>Options calls:</b>'); opts.forEach(p => lines.push(fmtLine(p))); lines.push(''); }
+    if (stocks.length) { lines.push('<b>Stock picks:</b>'); stocks.forEach(p => lines.push(fmtLine(p))); }
+    lines.push('');
+    lines.push('<i>Prices as of the last daily check.</i>');
+    await reply(msg.chat.id, lines.join('\n'));
+  });
+
+  bot.onText(/^\/record/, async (msg) => {
+    if (String(msg.chat.id) !== ownerId) return;
+    const sc = loadJSON<{ graded: any[] }>(SCORECARD_FILE, { graded: [] });
+    const graded = (sc.graded || []).filter(g => g.outcome !== 'OPEN');
+    const wins = graded.filter(g => g.outcome === 'WIN').length;
+    const losses = graded.filter(g => g.outcome === 'LOSS').length;
+    const total = wins + losses;
+    if (total === 0) {
+      await reply(msg.chat.id, '📊 <b>Record</b>\n\nNo graded picks yet — each pick grades 5 days after it is made.');
+      return;
+    }
+    const winRate = ((wins / total) * 100).toFixed(0);
+    const avg = (graded.reduce((s, g) => s + (g.stockReturnPct || 0), 0) / total).toFixed(1);
+    await reply(msg.chat.id, [
+      '📊 <b>Record</b>',
+      '',
+      `${wins}W / ${losses}L (${winRate}% win rate) across ${total} graded picks.`,
+      `Avg stock move per pick: ${Number(avg) >= 0 ? '+' : ''}${avg}%`,
+      '',
+      '<i>Outcomes track the underlying stock vs. target/stop.</i>',
+    ].join('\n'));
+  });
+
+  bot.on('polling_error', (err: any) => {
+    console.error('[Telegram] Polling error:', err?.message);
+  });
+
+  console.log('[Telegram] Command handlers registered (polling on)');
 }
 
 export async function sendWeeklyOptionsReport(report: WeeklyReport): Promise<void> {
@@ -152,6 +265,8 @@ export async function sendStartupMessage(): Promise<void> {
     `📅 Weekly picks: Every Monday 8:00 AM ET`,
     `📊 Daily updates: Weekdays 9:00 AM ET`,
     `🔔 Instant alerts: Target hits & stop warnings`,
+    ``,
+    `💬 Try /dashboard, /open, or /record`,
     ``,
     `<i>Use Robinhood to execute trades.</i>`,
   ].join('\n');

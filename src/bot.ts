@@ -6,7 +6,7 @@
 
 import 'dotenv/config';
 import cron from 'node-cron';
-import { initTelegram, sendStartupMessage, sendErrorAlert,
+import { initTelegram, sendStartupMessage, sendErrorAlert, registerCommands,
          sendWeeklyOptionsReport, sendWeeklyStockReport } from './telegram';
 import { runWeeklyScan } from './scanner';
 import { runDailyCheck, addPosition } from './portfolio';
@@ -200,6 +200,9 @@ async function main() {
     console.log('[Cron] Triggering daily check...');
     runDailyPipeline();
   }, { timezone: 'America/New_York' });
+
+  // Start listening for Telegram commands (daemon only)
+  registerCommands();
 
   // Keep alive
   console.log('\n[Bot] ✅ Cron jobs scheduled. Bot is running...\n');
