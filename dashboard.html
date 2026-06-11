@@ -204,6 +204,19 @@
   }
   .group-label span { color: var(--dim); font-weight: 400; }
 
+  /* ── Strategy head-to-head ──────────────────────── */
+  .vs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 18px; }
+  .vs-card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; position: relative; }
+  .vs-card .vs-name { font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--active); font-weight: 600; }
+  .vs-card .vs-wr { font-family: 'Martian Mono', monospace; font-weight: 800; font-size: 30px; letter-spacing: -0.04em; margin: 8px 0 2px; }
+  .vs-card .vs-rec { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .vs-card .vs-sub { font-size: 10px; color: var(--dim); margin-top: 7px; }
+  .vs-card.lead { border-color: var(--win); box-shadow: 0 0 0 1px var(--win) inset; }
+  .strat-tag { font-size: 8.5px; padding: 2px 7px; border-radius: 999px; letter-spacing: 0.05em; text-transform: uppercase; font-weight: 600; }
+  .strat-tag.pullback { color: var(--win); background: var(--win-bg); }
+  .strat-tag.breakout { color: var(--active); background: var(--active-bg); }
+  @media (max-width: 560px) { .vs-grid { grid-template-columns: 1fr; } }
+
   /* ── Error / load box ───────────────────────────── */
   .notice {
     border: 1px solid var(--line-bright); background: var(--panel-2); border-radius: 10px;
@@ -262,6 +275,12 @@
     <h2>P&amp;L per pick <span class="count" id="pnlCount"></span>
       <span class="tag">stock move from entry — not option P&amp;L</span></h2>
     <div id="pnlWrap"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Strategy head-to-head <span class="count" id="stratCount"></span>
+      <span class="tag">pullback vs breakout — graded picks only</span></h2>
+    <div id="stratWrap"></div>
   </div>
 
   <div class="panel">
@@ -361,6 +380,7 @@
     renderCharts();
     renderPnl();
     renderResults();
+    renderStrategies();
     renderStatus();
     ensureDefaultTV();
   }
@@ -416,6 +436,7 @@
     return `<tr data-tk="${esc(p.ticker)}" class="rowclick">
       <td><div class="tk">${esc(p.ticker)}</div></td>
       <td>${stPill}</td>
+      <td>${stratTag(p.strategy)}</td>
       <td class="num">${fmtMoney(p.entryPrice)}</td>
       <td class="num">${fmtMoney(price)}</td>
       <td class="num">${fmtMoney(p.targetPrice)}</td>
@@ -431,7 +452,7 @@
     list.sort((a, b) => levelState(b).sort - levelState(a).sort);
     const rows = list.map(openRow).join("");
     return `<div class="group-label">${title} <span>(${list.length})</span></div>` +
-      table(["Ticker", "Status", "Entry", "Now", "Target", "Stop", "P&L", "To target", "Level"], rows);
+      table(["Ticker", "Status", "Strategy", "Entry", "Now", "Target", "Stop", "P&L", "To target", "Level"], rows);
   }
 
   function renderOpen() {
@@ -565,19 +586,66 @@
       const pill = g.outcome === "WIN" ? '<span class="pill win">Win</span>' : '<span class="pill loss">Loss</span>';
       const d = new Date(g.pickedDate);
       const dStr = isNaN(d) ? "—" : (d.getMonth() + 1) + "/" + d.getDate();
+      const strat = stratTag(g.strategy);
       return `<tr>
         <td><div class="tk">${esc(g.ticker)}</div><div class="type">${typeLabel(g.pickType)}</div></td>
         <td>${pill}</td>
+        <td>${strat}</td>
         <td class="num">${fmtMoney(g.entryPrice)}</td>
         <td class="num">${fmtMoney(g.finalPrice)}</td>
         <td class="num ${cls(g.stockReturnPct)}">${fmtPct(g.stockReturnPct)}</td>
-        <td style="color:var(--muted);text-align:right">${esc(g.note || "")}</td>
         <td class="num" style="color:var(--dim)">${dStr}</td>
       </tr>`;
     }).join("");
     $("resWrap").innerHTML = table(
-      ["Ticker", "Outcome", "Entry", "Final", "Stock move", "Note", "Picked"], rows);
+      ["Ticker", "Outcome", "Strategy", "Entry", "Final", "Stock move", "Picked"], rows);
   }
+
+  function stratTag(s) {
+    if (s === "PULLBACK") return '<span class="strat-tag pullback">Pullback</span>';
+    if (s === "BREAKOUT") return '<span class="strat-tag breakout">Breakout</span>';
+    return '<span style="color:var(--dim);font-size:10px">—</span>';
+  }
+
+  function tallyStrategy(list) {
+    const closed = list.filter(g => g.outcome !== "OPEN");
+    const wins = closed.filter(g => g.outcome === "WIN").length;
+    const losses = closed.filter(g => g.outcome === "LOSS").length;
+    const total = wins + losses;
+    const avg = total ? closed.reduce((s, g) => s + (g.stockReturnPct || 0), 0) / total : 0;
+    return { wins, losses, total, winRate: total ? (wins / total) * 100 : 0, avg };
+  }
+
+  function renderStrategies() {
+    const closed = graded.filter(g => g.outcome !== "OPEN");
+    const pull = tallyStrategy(closed.filter(g => g.strategy === "PULLBACK"));
+    const brk = tallyStrategy(closed.filter(g => g.strategy === "BREAKOUT"));
+    const tagged = pull.total + brk.total;
+    $("stratCount").textContent = tagged ? "(" + tagged + ")" : "";
+
+    if (tagged === 0) {
+      $("stratWrap").innerHTML = `<div class="empty">No tagged picks graded yet. Once both strategies have graded picks, their records show here side by side.</div>`;
+      return;
+    }
+
+    // highlight the leader only when both have a meaningful sample
+    const bothReady = pull.total >= 3 && brk.total >= 3;
+    const pullLead = bothReady && pull.winRate > brk.winRate;
+    const brkLead = bothReady && brk.winRate > pull.winRate;
+
+    const card = (name, t, lead) => `
+      <div class="vs-card ${lead ? "lead" : ""}">
+        <div class="vs-name">${name}</div>
+        <div class="vs-wr num">${t.total ? t.winRate.toFixed(0) + "%" : "—"}</div>
+        <div class="vs-rec">${t.wins}W – ${t.losses}L${t.total ? " · " + t.total + " graded" : ""}</div>
+        <div class="vs-sub">avg stock move ${t.total ? (t.avg >= 0 ? "+" : "") + t.avg.toFixed(1) + "%" : "—"}</div>
+      </div>`;
+
+    $("stratWrap").innerHTML =
+      `<div class="vs-grid">${card("Pullback", pull, pullLead)}${card("Breakout", brk, brkLead)}</div>` +
+      (bothReady ? "" : `<div style="padding:0 18px 16px;font-size:10.5px;color:var(--dim)">Need ≥3 graded picks each before a leader is highlighted — small samples are noise.</div>`);
+  }
+
 
   function table(headers, rows) {
     return `<table><thead><tr>${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;

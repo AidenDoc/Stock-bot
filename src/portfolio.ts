@@ -54,11 +54,12 @@ export function addPosition(pick: StockPick): void {
     status: 'WATCHING',  // WATCHING = not entered yet, ACTIVE = you're in the trade
     pnlPercent: 0,
     notes: pick.summary,
+    strategy: pick.strategy,  // carry the PULLBACK / BREAKOUT tag through for grading
   };
 
   positions.push(position);
   savePortfolio(positions);
-  console.log(`[Portfolio] Added ${pick.ticker} to watchlist`);
+  console.log(`[Portfolio] Added ${pick.ticker} (${pick.strategy || 'n/a'}) to watchlist`);
 }
 
 // ── Mark as entered (call this when you actually buy) ──────

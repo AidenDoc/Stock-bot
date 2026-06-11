@@ -1,6 +1,8 @@
 // ============================================================
 // SCORECARD — grades past picks against real outcomes
 // Tracks win/loss record so you don't have to check manually
+// Now also breaks the record down by entry strategy
+// (PULLBACK vs BREAKOUT) for the head-to-head comparison.
 // ============================================================
 
 import fs from 'fs';
@@ -11,17 +13,20 @@ import { getQuote } from './marketData';
 const DB_FILE = path.join(process.cwd(), 'data', 'portfolio.json');
 const HISTORY_FILE = path.join(process.cwd(), 'data', 'scorecard.json');
 
+type Strategy = 'PULLBACK' | 'BREAKOUT' | undefined;
+
 export interface GradedPick {
   ticker: string;
   pickType: 'OPTIONS_CALL' | 'STOCK_LONG';
-  entryPrice: number;       // stock price when picked
+  strategy?: 'PULLBACK' | 'BREAKOUT';
+  entryPrice: number;
   targetPrice: number;
   stopLoss: number;
-  finalPrice: number;       // stock price at grading time
+  finalPrice: number;
   pickedDate: string;
   gradedDate: string;
-  outcome: 'WIN' | 'LOSS' | 'OPEN';   // hit target = WIN, hit stop = LOSS, else OPEN
-  stockReturnPct: number;   // % move in the underlying stock
+  outcome: 'WIN' | 'LOSS' | 'OPEN';
+  stockReturnPct: number;
   note: string;
 }
 
@@ -79,7 +84,6 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
     const entry = pos.entryPrice;
     const stockReturnPct = ((finalPrice - entry) / entry) * 100;
 
-    // Determine outcome based on whether stock hit target or stop
     let outcome: 'WIN' | 'LOSS' | 'OPEN' = 'OPEN';
     let note = '';
     if (finalPrice >= pos.targetPrice) {
@@ -89,7 +93,6 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
       outcome = 'LOSS';
       note = `Hit stop $${pos.stopLoss.toFixed(2)}`;
     } else {
-      // Didn't hit either — grade by direction
       outcome = stockReturnPct >= 0 ? 'WIN' : 'LOSS';
       note = `Closed between levels (${stockReturnPct >= 0 ? 'up' : 'down'})`;
     }
@@ -97,6 +100,7 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
     const graded: GradedPick = {
       ticker: pos.ticker,
       pickType: pos.pickType,
+      strategy: pos.strategy,           // carry the tag onto the graded record
       entryPrice: entry,
       targetPrice: pos.targetPrice,
       stopLoss: pos.stopLoss,
@@ -110,12 +114,30 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
 
     history.graded.push(graded);
     newlyGraded.push(graded);
-    console.log(`[Scorecard] ${pos.ticker}: ${outcome} (${stockReturnPct.toFixed(1)}% stock move)`);
+    console.log(`[Scorecard] ${pos.ticker} [${pos.strategy || 'n/a'}]: ${outcome} (${stockReturnPct.toFixed(1)}% stock move)`);
   }
 
   saveHistory(history);
   console.log(`[Scorecard] Graded ${newlyGraded.length} new picks`);
   return newlyGraded;
+}
+
+// ── Helper: tally a subset of graded picks ─────────────────
+function tally(graded: GradedPick[]) {
+  const closed = graded.filter(g => g.outcome !== 'OPEN');
+  const wins = closed.filter(g => g.outcome === 'WIN').length;
+  const losses = closed.filter(g => g.outcome === 'LOSS').length;
+  const total = wins + losses;
+  const avgStockReturn = total > 0
+    ? closed.reduce((sum, g) => sum + g.stockReturnPct, 0) / total
+    : 0;
+  return {
+    total,
+    wins,
+    losses,
+    winRate: total > 0 ? (wins / total) * 100 : 0,
+    avgStockReturn: parseFloat(avgStockReturn.toFixed(2)),
+  };
 }
 
 // ── Build the running record summary ───────────────────────
@@ -127,26 +149,24 @@ export function getRecord(): {
   avgStockReturn: number;
   optionsRecord: { wins: number; losses: number };
   stockRecord: { wins: number; losses: number };
+  byStrategy: {
+    pullback: { total: number; wins: number; losses: number; winRate: number; avgStockReturn: number };
+    breakout: { total: number; wins: number; losses: number; winRate: number; avgStockReturn: number };
+  };
 } {
   const history = loadHistory();
   const graded = history.graded.filter(g => g.outcome !== 'OPEN');
 
-  const wins = graded.filter(g => g.outcome === 'WIN').length;
-  const losses = graded.filter(g => g.outcome === 'LOSS').length;
-  const total = wins + losses;
-  const avgStockReturn = total > 0
-    ? graded.reduce((sum, g) => sum + g.stockReturnPct, 0) / total
-    : 0;
-
+  const overall = tally(graded);
   const opts = graded.filter(g => g.pickType === 'OPTIONS_CALL');
   const stocks = graded.filter(g => g.pickType === 'STOCK_LONG');
 
   return {
-    total,
-    wins,
-    losses,
-    winRate: total > 0 ? (wins / total) * 100 : 0,
-    avgStockReturn: parseFloat(avgStockReturn.toFixed(2)),
+    total: overall.total,
+    wins: overall.wins,
+    losses: overall.losses,
+    winRate: overall.winRate,
+    avgStockReturn: overall.avgStockReturn,
     optionsRecord: {
       wins: opts.filter(g => g.outcome === 'WIN').length,
       losses: opts.filter(g => g.outcome === 'LOSS').length,
@@ -154,6 +174,10 @@ export function getRecord(): {
     stockRecord: {
       wins: stocks.filter(g => g.outcome === 'WIN').length,
       losses: stocks.filter(g => g.outcome === 'LOSS').length,
+    },
+    byStrategy: {
+      pullback: tally(graded.filter(g => g.strategy === 'PULLBACK')),
+      breakout: tally(graded.filter(g => g.strategy === 'BREAKOUT')),
     },
   };
 }

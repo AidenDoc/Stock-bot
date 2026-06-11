@@ -77,6 +77,7 @@ export interface StockPick {
   sector: string;
   addedAt: string;             // ISO timestamp
   voteBreakdown?: string;      // e.g. "✅ CLAUDE (82) | ❌ GROQ (45)"
+  strategy?: 'PULLBACK' | 'BREAKOUT';   // which entry strategy chose this pick
 }
 
 export interface WeeklyReport {
@@ -112,4 +113,5 @@ export interface PortfolioPosition {
   status: 'WATCHING' | 'ACTIVE' | 'CLOSED';
   pnlPercent: number;
   notes: string;
+  strategy?: 'PULLBACK' | 'BREAKOUT';
 }
