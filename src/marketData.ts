@@ -266,27 +266,53 @@ function sleep(ms: number): Promise<void> {
 }
 
 // ── Wide ticker universe ───────────────────────────────────
+// ~125 names across 11 sectors: a mix of established large-caps and
+// speculative small-caps for broad signal coverage. A dynamic screener
+// is flagged to eventually feed this list; for now it's curated.
 export function getCandidateTickers(): string[] {
   return [
     // Mega cap tech
     'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA',
-    // Mid-cap tech & growth
-    'AMD', 'PLTR', 'COIN', 'RBLX', 'HOOD', 'SOFI', 'AFRM',
-    'PATH', 'BILL', 'DDOG', 'NET', 'SNOW',
-    // High-beta momentum
-    'SNAP', 'UBER', 'LYFT', 'RIVN', 'LCID', 'JOBY',
-    'IONQ', 'QUBT', 'RGTI', 'BBAI',
-    // Biotech / pharma
-    'MRNA', 'NVAX', 'ACHR', 'RXRX', 'CRSP', 'BEAM', 'NTLA',
-    // Financials
-    'JPM', 'GS', 'BAC', 'UPST', 'LC',
-    // Energy
-    'XOM', 'CVX', 'OXY', 'AR',
+
+    // Semiconductors
+    'AMD', 'AVGO', 'MU', 'MRVL', 'ARM', 'SMCI', 'ALAB', 'TSM',
+    'QCOM', 'TXN', 'ADI', 'NXPI', 'ON', 'LRCX', 'AMAT', 'KLAC',
+    'ACMR', 'WOLF', 'INTC',
+
+    // Software & cloud
+    'PLTR', 'SNOW', 'DDOG', 'NET', 'CRWD', 'ZS', 'PANW', 'NOW',
+    'PATH', 'BILL', 'MDB', 'TEAM', 'CRM', 'ORCL', 'ADBE', 'SHOP',
+    'TWLO', 'OKTA',
+
+    // Fintech & financials
+    'COIN', 'HOOD', 'SOFI', 'AFRM', 'UPST', 'LC', 'JPM', 'GS',
+    'BAC', 'V', 'MA', 'PYPL', 'SQ', 'NU',
+
     // Consumer & retail
-    'NKE', 'LULU', 'ONON', 'CROX',
-    // AI / semiconductor
-    'SMCI', 'ARM', 'AVGO', 'MU', 'MRVL', 'ALAB',
-    // Small cap momentum
-    'ACMR', 'WOLF', 'LAZR', 'OUST',
+    'NKE', 'LULU', 'ONON', 'CROX', 'SBUX', 'MCD', 'CMG', 'COST',
+    'WMT', 'TGT', 'DKNG', 'ABNB', 'CELH', 'ELF',
+
+    // EV, autos & energy
+    'RIVN', 'LCID', 'NIO', 'XPEV', 'F', 'GM', 'XOM', 'CVX',
+    'OXY', 'AR', 'ENPH', 'FSLR', 'PLUG', 'RUN',
+
+    // Quantum & frontier compute
+    'IONQ', 'QUBT', 'RGTI', 'BBAI', 'QBTS',
+
+    // Biotech & pharma
+    'MRNA', 'NVAX', 'CRSP', 'BEAM', 'NTLA', 'RXRX', 'LLY', 'PFE',
+    'BNTX', 'VRTX', 'REGN', 'AMGN',
+
+    // Aerospace, mobility & robotics
+    'ACHR', 'JOBY', 'UBER', 'LYFT', 'LAZR', 'OUST', 'RKLB', 'LUNR',
+
+    // Media, internet & comms
+    'SNAP', 'RBLX', 'PINS', 'SPOT', 'NFLX', 'DIS', 'ROKU', 'RDDT',
+
+    // Industrials & materials
+    'CAT', 'DE', 'BA', 'GE', 'FCX', 'CLF',
+
+    // Broad ETFs (liquid options, trend/context)
+    'SPY', 'QQQ', 'IWM', 'DIA', 'SMH', 'ARKK', 'XLF', 'XLE',
   ];
 }
