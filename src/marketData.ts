@@ -97,16 +97,57 @@ export async function getQuote(ticker: string): Promise<StockQuote | null> {
   }
 }
 
-// ── Technicals via Yahoo Finance historical data ───────────
-export async function getTechnicals(ticker: string, price: number): Promise<TechnicalIndicators> {
+// ── Pure technicals from a close series ─────────────────────
+// Extracted so live (getTechnicals) and backtest (replayTechnicals)
+// compute indicators from IDENTICAL code — no drift between them.
+// `closes` must be ordered oldest→newest and contain no nulls.
+export function computeTechnicals(ticker: string, closes: number[], price: number): TechnicalIndicators {
   const defaultResult: TechnicalIndicators = {
     ticker, rsi: null, macd: null, macdSignal: null,
     sma20: null, sma50: null, sma200: null,
     support: null, resistance: null, trend: 'neutral',
   };
 
+  if (closes.length < 20) return defaultResult;
+
+  const indicators = { ...defaultResult };
+
+  // SMA calculations
+  indicators.sma20 = sma(closes, 20);
+  indicators.sma50 = sma(closes, 50);
+  indicators.sma200 = sma(closes, 200);
+
+  // RSI(14)
+  indicators.rsi = rsi(closes, 14);
+
+  // MACD(12,26,9)
+  const { macd: macdLine, signal } = macd(closes, 12, 26, 9);
+  indicators.macd = macdLine;
+  indicators.macdSignal = signal;
+
+  // Support/Resistance
+  indicators.support = indicators.sma50 ?? price * 0.93;
+  indicators.resistance = price * 1.10;
+
+  // Trend
+  const bullish = [
+    indicators.rsi !== null && indicators.rsi > 50 && indicators.rsi < 72,
+    indicators.macd !== null && indicators.macdSignal !== null && indicators.macd > indicators.macdSignal,
+    indicators.sma20 !== null && indicators.sma50 !== null && indicators.sma20 > indicators.sma50,
+    indicators.sma50 !== null && price > indicators.sma50,
+  ].filter(Boolean).length;
+
+  if (bullish >= 3) indicators.trend = 'bullish';
+  else if (bullish <= 1) indicators.trend = 'bearish';
+  else indicators.trend = 'neutral';
+
+  return indicators;
+}
+
+// ── Technicals via Yahoo Finance historical data ───────────
+export async function getTechnicals(ticker: string, price: number): Promise<TechnicalIndicators> {
   try {
-    // Fetch 200 days of daily closes to calculate indicators
+    // Fetch 1y of daily closes to calculate indicators
     const res = await axios.get(
       `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}`,
       {
@@ -117,46 +158,13 @@ export async function getTechnicals(ticker: string, price: number): Promise<Tech
     );
 
     const result = res.data?.chart?.result?.[0];
-    if (!result) return defaultResult;
+    if (!result) return computeTechnicals(ticker, [], price);
 
     const closes: number[] = result.indicators?.quote?.[0]?.close?.filter((c: any) => c != null) || [];
-    if (closes.length < 20) return defaultResult;
-
-    const indicators = { ...defaultResult };
-
-    // SMA calculations
-    indicators.sma20 = sma(closes, 20);
-    indicators.sma50 = sma(closes, 50);
-    indicators.sma200 = sma(closes, 200);
-
-    // RSI(14)
-    indicators.rsi = rsi(closes, 14);
-
-    // MACD(12,26,9)
-    const { macd: macdLine, signal } = macd(closes, 12, 26, 9);
-    indicators.macd = macdLine;
-    indicators.macdSignal = signal;
-
-    // Support/Resistance
-    indicators.support = indicators.sma50 ?? price * 0.93;
-    indicators.resistance = price * 1.10;
-
-    // Trend
-    const bullish = [
-      indicators.rsi !== null && indicators.rsi > 50 && indicators.rsi < 72,
-      indicators.macd !== null && indicators.macdSignal !== null && indicators.macd > indicators.macdSignal,
-      indicators.sma20 !== null && indicators.sma50 !== null && indicators.sma20 > indicators.sma50,
-      indicators.sma50 !== null && price > indicators.sma50,
-    ].filter(Boolean).length;
-
-    if (bullish >= 3) indicators.trend = 'bullish';
-    else if (bullish <= 1) indicators.trend = 'bearish';
-    else indicators.trend = 'neutral';
-
-    return indicators;
+    return computeTechnicals(ticker, closes, price);
   } catch (err: any) {
     console.error(`[MarketData] getTechnicals error for ${ticker}:`, err?.message);
-    return defaultResult;
+    return computeTechnicals(ticker, [], price);
   }
 }
 
@@ -204,15 +212,33 @@ function macd(closes: number[], fast = 12, slow = 26, signal = 9): { macd: numbe
   };
 }
 
+// ── Option strike selection (nearest increment, ATM-or-just-OTM) ──
+// Nearest $1 increment for stocks <$20, $2.50 for $20-$50, $5 for $50+.
+// Exported so the backtest's options-grading arm picks the SAME strike.
+export function selectStrike(currentPrice: number): number {
+  let strikeIncrement = 5;
+  if (currentPrice < 20) strikeIncrement = 1;
+  else if (currentPrice < 50) strikeIncrement = 2.5;
+  return Math.ceil(currentPrice / strikeIncrement) * strikeIncrement;
+}
+
+// ── IV-by-price-tier model (approximates real momentum-stock IV ranges) ──
+// 80% IV for small speculative names down to 30% for large stable ones.
+// NOTE: this is a price-tier MODEL, not real option-chain IV. Exported so
+// the backtest's options-grading arm uses the SAME assumption.
+export function tieredIV(currentPrice: number): number {
+  if (currentPrice < 10) return 0.80;        // 80% IV for small speculative stocks
+  if (currentPrice < 20) return 0.65;        // 65% IV
+  if (currentPrice < 50) return 0.50;        // 50% IV
+  if (currentPrice < 150) return 0.40;       // 40% IV
+  return 0.30;                               // 30% IV for large stable stocks
+}
+
 // ── Options estimate ───────────────────────────────────────
 export function estimateOptionsData(
   ticker: string, currentPrice: number, targetPrice: number, weeksOut: number = 4
 ): OptionsData {
-  // Strike: nearest $1 increment for stocks <$20, $2.50 for $20-$50, $5 for $50+
-  let strikeIncrement = 5;
-  if (currentPrice < 20) strikeIncrement = 1;
-  else if (currentPrice < 50) strikeIncrement = 2.5;
-  const strikePrice = Math.ceil(currentPrice / strikeIncrement) * strikeIncrement;
+  const strikePrice = selectStrike(currentPrice);
 
   const expDate = getNextFriday(weeksOut);
 
@@ -221,12 +247,7 @@ export function estimateOptionsData(
   // Mid-priced ($15-50): ~$0.50-2.00
   // Higher ($50-200): ~$1.50-5.00
   // Based on ~30-50% IV for typical momentum stocks, simplified Black-Scholes approx
-  let ivEstimate: number;
-  if (currentPrice < 10) ivEstimate = 0.80;        // 80% IV for small speculative stocks
-  else if (currentPrice < 20) ivEstimate = 0.65;   // 65% IV
-  else if (currentPrice < 50) ivEstimate = 0.50;   // 50% IV
-  else if (currentPrice < 150) ivEstimate = 0.40;  // 40% IV
-  else ivEstimate = 0.30;                           // 30% IV for large stable stocks
+  const ivEstimate = tieredIV(currentPrice);
 
   // Simplified ATM call premium: S * IV * sqrt(T/365) * 0.4
   // where T = days to expiration, 0.4 ≈ N(d1) for ATM option

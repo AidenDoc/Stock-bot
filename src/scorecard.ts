@@ -28,6 +28,10 @@ export interface GradedPick {
   outcome: 'WIN' | 'LOSS' | 'OPEN';
   stockReturnPct: number;
   note: string;
+  // ── Options-grading arm (backtest only; optional, set alongside the
+  //    existing stock-drift grade, never replacing it) ──
+  optReturnPct?: number;            // Black-Scholes contract P&L % over the same hold
+  optOutcome?: 'WIN' | 'LOSS';      // option WIN/LOSS by contract P&L sign (≠ stock outcome)
 }
 
 interface ScorecardHistory {

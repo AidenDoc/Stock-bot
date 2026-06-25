@@ -69,15 +69,20 @@ async function fetchSpyReturnSince(isoDate: string): Promise<number | null> {
 
 function sign(n: number): string { return n >= 0 ? '+' : ''; }
 
-export async function runEvaluation(): Promise<void> {
-  const picks = loadGraded();
+// `picksOverride` lets the backtest harness (Step 3) feed graded replay
+// picks through this exact same report — e.g. one run per strategy for a
+// Pullback-vs-Breakout head-to-head — instead of reading the live file.
+export async function runEvaluation(picksOverride?: GradedPick[], label?: string): Promise<void> {
+  const picks = picksOverride
+    ? picksOverride.filter(g => g.outcome !== 'OPEN')
+    : loadGraded();
   const n = picks.length;
 
   const BAR  = '─'.repeat(53);
   const DBAR = '═'.repeat(53);
 
   console.log('\n' + DBAR);
-  console.log('  STOCK BOT — HONEST PERFORMANCE EVALUATION');
+  console.log(`  STOCK BOT — HONEST PERFORMANCE EVALUATION${label ? ` — ${label}` : ''}`);
   console.log(`  ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`);
   console.log(DBAR + '\n');
 

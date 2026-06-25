@@ -17,14 +17,14 @@ import { getStockNews } from './news';
 import { analyzeStock } from './analyst';
 import { getDynamicMovers } from './screener';
 
-type StrategyTag = 'PULLBACK' | 'BREAKOUT';
+export type StrategyTag = 'PULLBACK' | 'BREAKOUT';
 
-interface MarketRow {
+export interface MarketRow {
   quote: StockQuote;
   technicals: TechnicalIndicators;
 }
 
-interface ScoredCandidate extends MarketRow {
+export interface ScoredCandidate extends MarketRow {
   score: number;
   optionsScore: number;
   reasons: string[];
@@ -57,7 +57,7 @@ function optionsQuality(quote: StockQuote): { add: number; reasons: string[] } {
 
 // ── Strategy B: BREAKOUT with overextension filter ─────────
 // Returns null if the candidate is already too stretched to chase.
-function scoreBreakout(row: MarketRow): ScoredCandidate | null {
+export function scoreBreakout(row: MarketRow): ScoredCandidate | null {
   const { quote, technicals } = row;
 
   // --- Overextension guardrails (the fix for the 0-for-14 problem) ---
@@ -94,7 +94,7 @@ function scoreBreakout(row: MarketRow): ScoredCandidate | null {
 // ── Strategy A: PULLBACK in a confirmed uptrend ────────────
 // Only fires when a structurally strong stock has dipped to
 // support and cooled off — the opposite of buying the spike.
-function scorePullback(row: MarketRow): ScoredCandidate | null {
+export function scorePullback(row: MarketRow): ScoredCandidate | null {
   const { quote, technicals } = row;
   const { sma20, sma50, sma200, rsi, macd, macdSignal } = technicals;
 

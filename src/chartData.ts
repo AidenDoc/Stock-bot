@@ -32,12 +32,14 @@ function openTickersFromPortfolio(): string[] {
   }
 }
 
-// ~3 months of daily closes from Yahoo's free chart endpoint.
+// ~2 years of daily closes from Yahoo's free chart endpoint.
 async function fetchSeries(ticker: string): Promise<Series | null> {
   try {
+    const period2 = Math.floor(Date.now() / 1000);
+    const period1 = period2 - 2 * 365 * 24 * 60 * 60; // 2 years back
     const url =
       `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
-      `?range=3mo&interval=1d`;
+      `?period1=${period1}&period2=${period2}&interval=1d`;
     const res = await axios.get(url, {
       headers: { 'User-Agent': 'Mozilla/5.0' }, // Yahoo rejects empty UAs
       timeout: 15000,

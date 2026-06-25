@@ -9,7 +9,8 @@
     "dev": "ts-node src/bot.ts",
     "weekly": "node dist/bot.js --weekly",
     "daily": "node dist/bot.js --daily",
-    "charts": "node dist/bot.js --charts"
+    "charts": "node dist/bot.js --charts",
+    "backtest": "ts-node src/backtest.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
