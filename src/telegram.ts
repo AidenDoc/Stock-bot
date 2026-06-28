@@ -353,6 +353,9 @@ function formatOptionsPick(pick: StockPick, index: number): string {
     `📰 <b>Sentiment:</b> ${sentimentBar}`,
     `🎲 <b>Catalysts:</b> ${pick.catalysts.slice(0, 2).join(' | ')}`,
     `⚠️ <b>Risks:</b> ${pick.risks.slice(0, 2).join(' | ')}`,
+    pick.earningsGap?.withinHorizon
+      ? `🗓️ <b>Earnings in ${pick.earningsGap.daysUntil} days</b> (${pick.earningsGap.date}) — within hold window (binary risk)`
+      : '',
     `🎯 <b>Confidence:</b> ${pick.confidenceScore}/100 | R/R: ${pick.riskRewardRatio.toFixed(1)}:1`,
   ].join('\n');
 }
@@ -387,6 +390,9 @@ function formatStockPick(pick: StockPick, index: number): string {
     ``,
     `⚠️ <b>Risks:</b>`,
     ...pick.risks.slice(0, 2).map(r => `• ${r}`),
+    ...(pick.earningsGap?.withinHorizon
+      ? [`• 🗓️ <b>Earnings in ${pick.earningsGap.daysUntil} days</b> (${pick.earningsGap.date}) — within hold window (binary risk)`]
+      : []),
     ``,
     `🎯 Confidence: ${pick.confidenceScore}/100`,
   ].join('\n');

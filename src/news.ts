@@ -218,9 +218,106 @@ function getDateDaysAgo(days: number): string {
   return d.toISOString().split('T')[0];
 }
 
-// ── Earnings dates ─────────────────────────────────────────
-export async function getEarningsDates(tickers: string[]): Promise<Record<string, string>> {
-  return {}; // FMP endpoint removed, would need paid plan
+// ── Earnings dates (Finnhub) ───────────────────────────────
+// Replaces the old getEarningsDates(string[]) FMP stub (nothing
+// consumed it). Per-ticker lookup, fail-soft: any error or a
+// missing key returns null and logs — a scan must never break
+// just because earnings data is unavailable.
+const FINNHUB_BASE = 'https://finnhub.io/api/v1';
+const FINNHUB_LOOKAHEAD_DAYS = 90;   // only care about the next ~quarter
+
+// Free tier is 60 req/min. Serialize Finnhub calls and space them
+// ~1.1s apart so a tight scan loop can never burst past the cap.
+const FINNHUB_MIN_INTERVAL_MS = 1100;
+let finnhubGate: Promise<void> = Promise.resolve();
+let lastFinnhubStart = 0;
+
+function fmtDate(d: Date): string {
+  return d.toISOString().split('T')[0];
+}
+
+async function throttleFinnhub(): Promise<void> {
+  const wait = finnhubGate.then(async () => {
+    const delay = Math.max(0, lastFinnhubStart + FINNHUB_MIN_INTERVAL_MS - Date.now());
+    if (delay > 0) await new Promise(r => setTimeout(r, delay));
+    lastFinnhubStart = Date.now();
+  });
+  finnhubGate = wait.catch(() => {});
+  await wait;
+}
+
+// Returns the next upcoming earnings date (YYYY-MM-DD) within the
+// look-ahead window, or null if none / on any error.
+export async function getNextEarningsDate(ticker: string): Promise<string | null> {
+  const apiKey = process.env.FINNHUB_API_KEY;
+  if (!apiKey) {
+    console.warn('[Earnings] FINNHUB_API_KEY not set — skipping earnings lookup');
+    return null;
+  }
+
+  await throttleFinnhub();
+
+  const today = new Date();
+  const to = new Date();
+  to.setDate(to.getDate() + FINNHUB_LOOKAHEAD_DAYS);
+  const todayStr = fmtDate(today);
+
+  try {
+    const res = await axios.get(`${FINNHUB_BASE}/calendar/earnings`, {
+      params: { from: todayStr, to: fmtDate(to), symbol: ticker, token: apiKey },
+      timeout: 8000,
+    });
+
+    const upcoming: string[] = (res.data?.earningsCalendar || [])
+      .map((e: any) => e?.date)
+      .filter((d: any): d is string => typeof d === 'string' && d >= todayStr)
+      .sort();
+
+    return upcoming[0] || null;
+  } catch (err: any) {
+    const status = err?.response?.status;
+    console.warn(`[Earnings] Finnhub lookup failed for ${ticker}: ${status ? `HTTP ${status} ` : ''}${err?.message}`);
+    return null;
+  }
+}
+
+// Translate a timeHorizon string ("1 week", "1-2 weeks", "3-5 days")
+// into a day count. Falls back to 28 days when unparseable.
+function parseHorizonDays(timeHorizon: string, pickType: 'OPTIONS_CALL' | 'STOCK_LONG'): number {
+  const fallback = pickType === 'OPTIONS_CALL' ? 28 : 28; // ~swing window default
+  if (!timeHorizon) return fallback;
+
+  const nums = (timeHorizon.match(/\d+/g) || []).map(Number);
+  if (nums.length === 0) return fallback;
+  const maxNum = Math.max(...nums);
+
+  const lower = timeHorizon.toLowerCase();
+  if (lower.includes('month')) return maxNum * 30;
+  if (lower.includes('week')) return maxNum * 7;
+  if (lower.includes('day')) return maxNum;
+  return fallback;
+}
+
+// Given a (possibly null) earnings date and the pick's stated horizon,
+// compute the gap object that hangs off StockPick. Returns null when
+// there is no usable upcoming date.
+export function computeEarningsGap(
+  earningsDate: string | null,
+  timeHorizon: string,
+  pickType: 'OPTIONS_CALL' | 'STOCK_LONG'
+): { date: string; daysUntil: number; withinHorizon: boolean } | null {
+  if (!earningsDate) return null;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const ed = new Date(`${earningsDate}T00:00:00`);
+  if (isNaN(ed.getTime())) return null;
+
+  const daysUntil = Math.round((ed.getTime() - today.getTime()) / 86400000);
+  if (daysUntil < 0) return null;
+
+  const horizonDays = parseHorizonDays(timeHorizon, pickType);
+  return { date: earningsDate, daysUntil, withinHorizon: daysUntil <= horizonDays };
 }
 
 // ── Key events this week ───────────────────────────────────

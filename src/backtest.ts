@@ -422,6 +422,12 @@ function r2(x: number): number { return parseFloat(x.toFixed(2)); }
 // ════════════════════════════════════════════════════════════
 const RISK_FREE_RATE = 0.04;   // flat short rate for BS; ~negligible over a 4-week hold
 const OPTION_DAYS = 28;        // ~4 weeks to expiry — matches estimateOptionsData & ≈ HORIZON
+// Floor below which a contract is treated as untradeable and dropped from the
+// options arm. A BS entry premium of a few cents (e.g. far-OTM calls on sub-$10,
+// 80%-IV names) cannot be filled at model value on a real chain — the bid/ask
+// makes any % return fiction. Dropping these (vs flooring at −100%) keeps the
+// arm honest without manufacturing fake LOSSes; the stock-drift grade is untouched.
+const MIN_TRADEABLE_PREMIUM = 0.10;
 
 // BS call value; at/after expiry (daysToExpiry ≤ 0) only intrinsic remains.
 function bsCallValue(S: number, K: number, daysToExpiry: number, iv: number): number {
@@ -444,10 +450,12 @@ export interface OptionGrade {
 // g.finalPrice is the underlying at exit in every branch (target, stop, same-bar
 // → stop, or horizon close), and g.exitDate is the exit date — so the option
 // exits at the same level, same day, with theta over the days actually held.
-export function gradeOption(entryDate: string, entryStock: number, g: GradeResult): OptionGrade {
+export function gradeOption(entryDate: string, entryStock: number, g: GradeResult): OptionGrade | null {
   const strike = selectStrike(entryStock);
   const iv = tieredIV(entryStock);
   const entryPremium = bsCallValue(entryStock, strike, OPTION_DAYS, iv);
+  // Untradeable cents-premium contract → drop from the options arm entirely.
+  if (entryPremium < MIN_TRADEABLE_PREMIUM) return null;
   const daysLeft = OPTION_DAYS - calendarDaysBetween(entryDate, g.exitDate);
   const exitValue = bsCallValue(g.finalPrice, strike, daysLeft, iv);
   const optReturnPct = entryPremium > 0 ? ((exitValue - entryPremium) / entryPremium) * 100 : 0;
@@ -461,6 +469,8 @@ export function gradeOption(entryDate: string, entryStock: number, g: GradeResul
 function buildGraded(
   cand: ScoredCandidate, date: string, entry: number, target: number, stop: number, g: GradeResult,
 ): GradedPick {
+  // opt is null when the contract is below the tradeable-premium floor; in that
+  // case the options fields stay unset and summarizeOptions skips the pick.
   const opt = gradeOption(date, entry, g);
   return {
     ticker: cand.quote.ticker,
@@ -475,8 +485,8 @@ function buildGraded(
     outcome: g.outcome,
     stockReturnPct: r2(g.stockReturnPct),
     note: g.exitReason,
-    optReturnPct: r2(opt.optReturnPct),
-    optOutcome: opt.optOutcome,
+    optReturnPct: opt ? r2(opt.optReturnPct) : undefined,
+    optOutcome: opt ? opt.optOutcome : undefined,
   };
 }
 
@@ -753,6 +763,9 @@ function printOptionsCaveat(): void {
   console.log('     • Stops exit at the contract\'s residual BS value at the −1.5×ATR level — NOT');
   console.log('       −100%. It assumes you can exit AT the stop; on wide-spread / illiquid');
   console.log('       contracts that is optimistic, so the opts result is a MILD UPPER BOUND.');
+  console.log(`     • Contracts with a BS entry premium < $${MIN_TRADEABLE_PREMIUM.toFixed(2)} are DROPPED from the opts arm`);
+  console.log('       (untradeable cents-premium fills are fiction); the swing grade keeps them,');
+  console.log('       so the opts N is < the swing N by exactly those dropped picks.');
 }
 
 async function main() {

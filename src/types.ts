@@ -78,6 +78,11 @@ export interface StockPick {
   addedAt: string;             // ISO timestamp
   voteBreakdown?: string;      // e.g. "✅ CLAUDE (82) | ❌ GROQ (45)"
   strategy?: 'PULLBACK' | 'BREAKOUT';   // which entry strategy chose this pick
+  earningsGap?: {              // next earnings event vs. the trade's hold window (info-only)
+    date: string;              // YYYY-MM-DD of next upcoming earnings
+    daysUntil: number;         // calendar days from today to that date
+    withinHorizon: boolean;    // true if earnings land inside the pick's timeHorizon
+  };
 }
 
 export interface WeeklyReport {

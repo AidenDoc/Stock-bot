@@ -13,7 +13,7 @@
 
 import { StockQuote, TechnicalIndicators, StockPick } from './types';
 import { getQuote, getTechnicals, getCandidateTickers } from './marketData';
-import { getStockNews } from './news';
+import { getStockNews, getNextEarningsDate, computeEarningsGap } from './news';
 import { analyzeStock } from './analyst';
 import { getDynamicMovers } from './screener';
 
@@ -157,6 +157,19 @@ async function runPicks(
 
     if (qualifies) {
       pick!.strategy = strategyTag;
+
+      // Info-only earnings flag: resolve the next earnings date and
+      // mark whether it lands inside the trade's hold window. Only
+      // done for actual picks (saves Finnhub quota); never blocks.
+      const earningsDate = await getNextEarningsDate(cand.quote.ticker);
+      const gap = computeEarningsGap(earningsDate, pick!.timeHorizon, pickType);
+      if (gap) {
+        pick!.earningsGap = gap;
+        if (gap.withinHorizon) {
+          console.log(`[Scanner] ⚠️ ${pick!.ticker} earnings in ${gap.daysUntil}d — within ${pick!.timeHorizon} hold window`);
+        }
+      }
+
       out.push(pick!);
       console.log(`[Scanner] ✅ ${strategyTag} ${pickType === 'OPTIONS_CALL' ? 'OPTIONS' : 'STOCK'} PICK: ${pick!.ticker} (${pick!.confidenceScore}/100, R/R ${pick!.riskRewardRatio})`);
     } else {

@@ -33,10 +33,15 @@ function estimatedOptionsPnl(stockReturnPct: number, outcome: string): number {
   return Math.min(stockReturnPct * OPTIONS_LEVERAGE, 500);
 }
 
-function maxLosingStreak(picks: GradedPick[]): number {
+// Streak over an arbitrary loss predicate — defaults to the stock outcome, but
+// the BS-options arm passes its own (a stock loss is NOT a −100% option loss).
+function maxLosingStreak(
+  picks: GradedPick[],
+  isLoss: (p: GradedPick) => boolean = p => p.outcome === 'LOSS',
+): number {
   let max = 0, cur = 0;
   for (const p of picks) {
-    if (p.outcome === 'LOSS') { cur++; max = Math.max(max, cur); }
+    if (isLoss(p)) { cur++; max = Math.max(max, cur); }
     else cur = 0;
   }
   return max;
@@ -131,6 +136,20 @@ export async function runEvaluation(picksOverride?: GradedPick[], label?: string
   const optWins  = optPicks.filter(p => p.outcome === 'WIN').length;
   const stkWins  = stkPicks.filter(p => p.outcome === 'WIN').length;
 
+  // ── Black-Scholes options arm ────────────────────────────
+  // Backtest picks carry a real per-contract optReturnPct/optOutcome (theta +
+  // delta + tiered-IV, stops exiting at residual BS value). When present, this
+  // SUPERSEDES the rough −100%/4×-leverage estimatedOptionsPnl model below,
+  // which only survives as the fallback for legacy/live picks lacking the arm.
+  const bsArm    = picks.filter(p => p.optReturnPct != null);
+  const hasBsArm = bsArm.length > 0;
+  const bsRet    = (p: GradedPick) => p.optReturnPct as number;
+  const bsWins   = bsArm.filter(p => p.optOutcome === 'WIN');
+  const bsLosses = bsArm.filter(p => p.optOutcome === 'LOSS');
+  const bsAvg    = bsArm.length    ? bsArm.reduce((s, p)    => s + bsRet(p), 0) / bsArm.length    : 0;
+  const bsWinAvg = bsWins.length   ? bsWins.reduce((s, p)   => s + bsRet(p), 0) / bsWins.length   : 0;
+  const bsLosAvg = bsLosses.length ? bsLosses.reduce((s, p) => s + bsRet(p), 0) / bsLosses.length : 0;
+
   console.log('WIN RATE  (the number that fools people)');
   console.log(BAR);
   console.log(`  Overall:  ${wins.length}W / ${losses.length}L  =  ${winRate.toFixed(0)}%`);
@@ -179,9 +198,25 @@ export async function runEvaluation(picksOverride?: GradedPick[], label?: string
     }
   }
 
-  console.log(`\n  Reality check: options P&L is always more extreme than the stock move.`);
-  console.log(`  +8% stock WIN  ≈  +${(8 * OPTIONS_LEVERAGE).toFixed(0)}% option (rough, depends on delta/IV).`);
-  console.log(`  Stock LOSS near stop  ≈  −100% option (full premium wipeout).\n`);
+  if (hasBsArm) {
+    console.log(`\n  Black-Scholes options arm (${bsArm.length} picks — modeled per-contract P&L):`);
+    console.log(`    Win rate: ${((bsWins.length / bsArm.length) * 100).toFixed(0)}%  (${bsWins.length}W / ${bsLosses.length}L)`);
+    console.log(`    Expectancy: ${sign(bsAvg)}${bsAvg.toFixed(0)}% per pick  |  ` +
+      `Wins avg: ${sign(bsWinAvg)}${bsWinAvg.toFixed(0)}%  |  Losses avg: ${sign(bsLosAvg)}${bsLosAvg.toFixed(0)}%`);
+    if (bsArm.length < picks.length) {
+      console.log(`    (${picks.length - bsArm.length} pick(s) excluded: BS entry premium below the tradeable floor.)`);
+    }
+  }
+
+  if (hasBsArm) {
+    console.log(`\n  Reality check: the options arm above is modeled per contract with Black-Scholes`);
+    console.log(`  (theta + delta + tiered-IV) and exits at the contract's residual value on a stop —`);
+    console.log(`  NOT a flat −100%. IV is a price-tier model, so treat it as directional, not precise.\n`);
+  } else {
+    console.log(`\n  Reality check: options P&L is always more extreme than the stock move.`);
+    console.log(`  +8% stock WIN  ≈  +${(8 * OPTIONS_LEVERAGE).toFixed(0)}% option (rough, depends on delta/IV).`);
+    console.log(`  Stock LOSS near stop  ≈  −100% option (full premium wipeout).\n`);
+  }
 
   // ── Directional environment ──────────────────────────────
   const upPicks   = picks.filter(p => p.stockReturnPct > 0);
@@ -203,16 +238,26 @@ export async function runEvaluation(picksOverride?: GradedPick[], label?: string
   }
 
   // ── Losing streak ────────────────────────────────────────
-  const streak = maxLosingStreak(sortedByDate);
+  // With the BS arm present, grade the streak on the contract outcome — a stock
+  // loss is not a −100% option, so the option streak can differ from the stock one.
+  const streak = hasBsArm
+    ? maxLosingStreak(sortedByDate, p => p.optOutcome === 'LOSS')
+    : maxLosingStreak(sortedByDate);
 
   console.log('WORST LOSING STREAK');
   console.log(BAR);
-  console.log(`  Max consecutive losses: ${streak}`);
+  console.log(`  Max consecutive ${hasBsArm ? 'options ' : ''}losses: ${streak}`);
 
   if (streak >= 3) {
-    console.log(`\n  ⚠️  ${streak} consecutive options losses = ${streak} × ~−100% on each contract.`);
-    console.log(`  That wipeout must be survivable without blowing the account.`);
-    console.log(`  Rule of thumb: never risk more than 1-2% of account per pick.\n`);
+    if (hasBsArm) {
+      console.log(`\n  ⚠️  ${streak} consecutive options losses (BS arm, avg ${sign(bsLosAvg)}${bsLosAvg.toFixed(0)}% per contract).`);
+      console.log(`  Modeled losses are not −100%, but the cumulative drawdown must still be survivable.`);
+      console.log(`  Rule of thumb: never risk more than 1-2% of account per pick.\n`);
+    } else {
+      console.log(`\n  ⚠️  ${streak} consecutive options losses = ${streak} × ~−100% on each contract.`);
+      console.log(`  That wipeout must be survivable without blowing the account.`);
+      console.log(`  Rule of thumb: never risk more than 1-2% of account per pick.\n`);
+    }
   } else if (streak > 0) {
     console.log(`  (streak will grow with more picks — size positions conservatively)\n`);
   } else {
