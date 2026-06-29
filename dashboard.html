@@ -568,10 +568,25 @@
       return `<tr>
         <td><div class="tk">${esc(p.ticker)}</div><div class="type">${typeLabel(p.pickType)}</div></td>
         <td class="num ${cls(pnl)}">${fmtPct(pnl)}</td>
+        <td>${newsViewCell(p)}</td>
         <td class="bar-cell"><div class="bar"><span style="width:${w}%;background:${color}"></span></div></td>
       </tr>`;
     }).join("");
-    $("pnlWrap").innerHTML = table(["Ticker", "Stock move", ""], rows);
+    $("pnlWrap").innerHTML = table(["Ticker", "Stock move", "News view", ""], rows);
+  }
+
+  // Independent news-only verdict vs the technical read. Highlights the
+  // useful case: news disagreeing with technicals. Info-only badge.
+  function newsViewCell(p) {
+    const nv = p.newsView;
+    if (!nv || !nv.direction) return '<span style="color:var(--dim);font-size:10px">—</span>';
+    const dir = nv.direction;
+    const color = dir === "bullish" ? "var(--win)" : dir === "bearish" ? "var(--loss)" : "var(--muted)";
+    const diverges = dir !== "neutral" && p.techTrend && dir !== p.techTrend;
+    const flag = diverges
+      ? ` <span class="strat-tag" style="background:rgba(245,158,11,.16);color:#f59e0b" title="${esc(nv.rationale || '')}">⚠ vs ${esc(p.techTrend)}</span>`
+      : "";
+    return `<span style="color:${color};font-weight:600;font-size:11px" title="${esc(nv.rationale || '')}">${dir.toUpperCase()} ${nv.confidence}</span>${flag}`;
   }
 
   function renderResults() {

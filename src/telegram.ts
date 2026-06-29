@@ -320,6 +320,22 @@ function escapeHTML(str: string): string {
     .replace(/>/g, '&gt;');
 }
 
+// Independent news-only verdict line. Empty when no news view exists.
+// Emphasizes the case the user cares about most: news disagreeing with
+// the technical read (that divergence is the useful signal).
+function formatNewsView(pick: StockPick): string {
+  const nv = pick.newsView;
+  if (!nv) return '';
+  const tech = pick.technicals.trend;
+  const icon = nv.direction === 'bullish' ? '🟢' : nv.direction === 'bearish' ? '🔴' : '⚪';
+  const diverges = nv.direction !== 'neutral' && nv.direction !== tech;
+  const tag = diverges
+    ? ` 🔀 <b>DISAGREES with technicals (${tech})</b>`
+    : '';
+  const rationale = nv.rationale ? ` — ${escapeHTML(nv.rationale)}` : '';
+  return `📰 <b>News view:</b> ${icon} ${nv.direction.toUpperCase()} (${nv.confidence}/100)${tag}${rationale}`;
+}
+
 function formatOptionsPick(pick: StockPick, index: number): string {
   const opt = pick.options!;
   const sentimentBar = getSentimentBar(pick.news);
@@ -351,6 +367,7 @@ function formatOptionsPick(pick: StockPick, index: number): string {
     ``,
     `📊 <b>Technicals:</b> ${techEmoji} ${pick.technicals.trend.toUpperCase()} | RSI ${pick.technicals.rsi?.toFixed(0) || 'N/A'} | MACD ${pick.technicals.macd !== null ? (pick.technicals.macd > 0 ? '▲' : '▼') : 'N/A'}`,
     `📰 <b>Sentiment:</b> ${sentimentBar}`,
+    formatNewsView(pick),
     `🎲 <b>Catalysts:</b> ${pick.catalysts.slice(0, 2).join(' | ')}`,
     `⚠️ <b>Risks:</b> ${pick.risks.slice(0, 2).join(' | ')}`,
     pick.earningsGap?.withinHorizon
@@ -384,6 +401,7 @@ function formatStockPick(pick: StockPick, index: number): string {
     ``,
     `📰 <b>Sentiment:</b> ${sentimentBar}`,
     ...pick.news.slice(0, 3).map(n => `• ${n.source}: ${truncate(n.title, 65)}`),
+    formatNewsView(pick),
     ``,
     `🎲 <b>Catalysts:</b>`,
     ...pick.catalysts.slice(0, 3).map(c => `• ${c}`),

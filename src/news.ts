@@ -7,6 +7,35 @@ import { NewsArticle } from './types';
 
 const NEWS_BASE = 'https://newsapi.org/v2';
 
+// ── Point-in-time date window ──────────────────────────────
+// Every ticker-news fetch is parameterized by an explicit [from, to]
+// window instead of a hardcoded "last N days from now". Live callers
+// omit it and get the default recent window; the eventual point-in-time
+// backtest passes { from, to } (or just { to } as an asOf date) to ask
+// "news as of date T" through the very same function — no rewrite.
+export interface NewsWindow {
+  from?: string;   // YYYY-MM-DD inclusive; defaults to (to - 5 days)
+  to?: string;     // YYYY-MM-DD inclusive; defaults to today (the asOf date)
+}
+
+const DEFAULT_LOOKBACK_DAYS = 5;
+
+function resolveWindow(w?: NewsWindow): { from: string; to: string; fromMs: number; toMs: number } {
+  const to = w?.to || fmtDate(new Date());
+  let from = w?.from;
+  if (!from) {
+    const d = new Date(`${to}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - DEFAULT_LOOKBACK_DAYS);
+    from = fmtDate(d);
+  }
+  return {
+    from,
+    to,
+    fromMs: new Date(`${from}T00:00:00Z`).getTime(),
+    toMs: new Date(`${to}T23:59:59Z`).getTime(),
+  };
+}
+
 const RSS_FEEDS = [
   { name: 'WSJ Markets', url: 'https://feeds.a.dj.com/rss/RSSMarketsMain.xml' },
   { name: 'WSJ Economy', url: 'https://feeds.a.dj.com/rss/RSSWorldNews.xml' },
@@ -16,7 +45,10 @@ const RSS_FEEDS = [
 ];
 
 // ── Parse RSS XML manually (no extra dependency needed) ────
-function parseRSSItems(xml: string, sourceName: string): NewsArticle[] {
+// Items are kept only if their pubDate falls inside [fromMs, toMs].
+// (RSS feeds only carry recent items, so a past window naturally
+// yields nothing here — which is correct: RSS can't be point-in-time.)
+function parseRSSItems(xml: string, sourceName: string, fromMs: number, toMs: number): NewsArticle[] {
   const items: NewsArticle[] = [];
   const itemMatches = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
 
@@ -28,10 +60,10 @@ function parseRSSItems(xml: string, sourceName: string): NewsArticle[] {
 
     if (!title || title.length < 10) continue;
 
-    // Only include recent articles (last 5 days)
+    // Keep only items inside the requested window.
     if (pubDate) {
-      const age = Date.now() - new Date(pubDate).getTime();
-      if (age > 5 * 24 * 60 * 60 * 1000) continue;
+      const t = new Date(pubDate).getTime();
+      if (!isNaN(t) && (t < fromMs || t > toMs)) continue;
     }
 
     items.push({
@@ -57,7 +89,12 @@ function stripCDATA(str: string): string {
 }
 
 // ── Fetch all RSS feeds ────────────────────────────────────
-async function fetchRSSFeeds(): Promise<NewsArticle[]> {
+// Window defaults to the recent lookback so existing callers
+// (e.g. getMarketNews) keep their behavior unchanged.
+async function fetchRSSFeeds(
+  fromMs: number = Date.now() - DEFAULT_LOOKBACK_DAYS * 86400000,
+  toMs: number = Date.now(),
+): Promise<NewsArticle[]> {
   const allArticles: NewsArticle[] = [];
 
   for (const feed of RSS_FEEDS) {
@@ -66,7 +103,7 @@ async function fetchRSSFeeds(): Promise<NewsArticle[]> {
         timeout: 8000,
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; StockBot/1.0)' }
       });
-      const articles = parseRSSItems(res.data, feed.name);
+      const articles = parseRSSItems(res.data, feed.name, fromMs, toMs);
       allArticles.push(...articles);
     } catch (err: any) {
       console.warn(`[News] RSS fetch failed for ${feed.name}: ${err?.message}`);
@@ -76,66 +113,169 @@ async function fetchRSSFeeds(): Promise<NewsArticle[]> {
   return allArticles;
 }
 
-// ── Filter RSS articles for a specific ticker ──────────────
+// ── Filter generic (RSS / NewsAPI) articles for a specific ticker ──
+// Stricter than a substring match: a bare lowercased ticker like "ba"
+// used to match "Bernie", "based", "debate"… — that looseness is what
+// let generic market headlines through. We now require one of:
+//   • a $CASHTAG ($aapl)
+//   • a significant company-name word (>=4 chars, not a corp suffix)
+//   • the ticker as a STANDALONE word, and only for tickers >=3 chars
+//     (2-letter tickers are too noisy without a cashtag/name hit).
+// Finnhub's symbol-keyed results skip this entirely — they're already
+// ticker-specific — so this only guards the fallback sources.
+const NAME_STOPWORDS = new Set([
+  'inc', 'corp', 'co', 'ltd', 'plc', 'the', 'company', 'group',
+  'holdings', 'corporation', 'class', 'common', 'stock', 'and',
+]);
+
 function filterForTicker(articles: NewsArticle[], ticker: string, companyName: string): NewsArticle[] {
-  const tickerLower = ticker.toLowerCase();
-  const nameParts = companyName.toLowerCase().split(' ').filter(w => w.length > 3);
+  const t = ticker.toLowerCase();
+  const cashtag = new RegExp(`\\$${t}\\b`, 'i');
+  const tickerWord = new RegExp(`\\b${t}\\b`, 'i');
+  const nameParts = companyName.toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(w => w.length >= 4 && !NAME_STOPWORDS.has(w));
 
   return articles.filter(a => {
-    const text = (a.title + ' ' + a.summary).toLowerCase();
-    return text.includes(tickerLower) ||
-      text.includes(`$${tickerLower}`) ||
-      nameParts.some(part => text.includes(part));
+    const text = `${a.title} ${a.summary}`.toLowerCase();
+    if (cashtag.test(text)) return true;
+    if (nameParts.some(part => text.includes(part))) return true;
+    if (t.length >= 3 && tickerWord.test(text)) return true;
+    return false;
   });
 }
 
-// ── NewsAPI for ticker-specific news ──────────────────────
-export async function getStockNews(ticker: string, companyName: string): Promise<NewsArticle[]> {
-  const apiKey = process.env.NEWS_API_KEY!;
-  const results: NewsArticle[] = [];
-
-  try {
-    const rssArticles = await fetchRSSFeeds();
-    const relevant = filterForTicker(rssArticles, ticker, companyName);
-    results.push(...relevant.slice(0, 3));
-  } catch (err: any) {
-    console.warn('[News] RSS fetch error:', err?.message);
+// ── Finnhub company-news (PRIMARY, symbol-keyed) ───────────
+// Ticker-specific by construction — Finnhub returns only this symbol's
+// stories, so it fixes the relevance problem the market-wide RSS feeds
+// have. Fail-soft (missing key / error → []) and throttled via the
+// shared Finnhub gate. NOTE: this is per-ticker, so a full scan makes
+// more Finnhub calls than the earnings flag did (one extra call per
+// analyzed pick) — the ~1.1s throttle keeps it under the 60/min cap.
+async function fetchFinnhubCompanyNews(
+  ticker: string, from: string, to: string, fromMs: number, toMs: number,
+): Promise<NewsArticle[]> {
+  const apiKey = process.env.FINNHUB_API_KEY;
+  if (!apiKey) {
+    console.warn('[News] FINNHUB_API_KEY not set — skipping Finnhub company-news');
+    return [];
   }
 
-  // 2. Fill remaining slots with NewsAPI
+  await throttleFinnhub();
+
   try {
-    const query = `${ticker} OR "${companyName}" stock`;
-    const res = await axios.get(`${NEWS_BASE}/everything`, {
-      params: {
-        q: query,
-        language: 'en',
-        sortBy: 'publishedAt',
-        pageSize: 8,
-        from: getDateDaysAgo(5),
-        apiKey,
-      },
+    const res = await axios.get(`${FINNHUB_BASE}/company-news`, {
+      params: { symbol: ticker, from, to, token: apiKey },
+      timeout: 8000,
     });
 
-    const newsApiArticles: NewsArticle[] = (res.data?.articles || [])
-      .filter((a: any) => a.title && !a.title.includes('[Removed]'))
-      .slice(0, 5)
-      .map((a: any) => ({
-        title: a.title,
-        source: a.source?.name || 'Unknown',
-        publishedAt: a.publishedAt,
-        url: a.url,
-        sentiment: classifySentiment(a.title + ' ' + (a.description || '')),
-        summary: a.description || a.title,
-      }));
-
-    results.push(...newsApiArticles);
+    const raw: any[] = Array.isArray(res.data) ? res.data : [];
+    return raw
+      .filter(a => a && typeof a.headline === 'string' && a.headline.length >= 10)
+      .map(a => ({
+        title: String(a.headline),
+        source: a.source ? `Finnhub/${a.source}` : 'Finnhub',
+        publishedAt: a.datetime ? new Date(a.datetime * 1000).toISOString() : new Date().toISOString(),
+        url: a.url || '',
+        sentiment: classifySentiment(`${a.headline} ${a.summary || ''}`),
+        summary: a.summary ? String(a.summary).substring(0, 200) : String(a.headline),
+      }))
+      // Clamp to the requested window HERE (pre-slice) as defense-in-depth.
+      // The final merged clamp in getStockNews is the real point-in-time
+      // guarantee, but dropping Finnhub's out-of-window items before the
+      // slice(0,5) / fallback gate keeps more *valid* stories than letting
+      // future-dated rows occupy slots and get cut downstream. (Finnhub's
+      // own date boundaries don't exactly match [from,to] at timezone edges.)
+      .filter(a => {
+        const t = new Date(a.publishedAt).getTime();
+        return isNaN(t) || (t >= fromMs && t <= toMs);
+      })
+      // newest first
+      .sort((x, y) => new Date(y.publishedAt).getTime() - new Date(x.publishedAt).getTime());
   } catch (err: any) {
-    console.error(`[News] NewsAPI error for ${ticker}:`, err?.message);
+    const status = err?.response?.status;
+    console.warn(`[News] Finnhub company-news failed for ${ticker}: ${status ? `HTTP ${status} ` : ''}${err?.message}`);
+    return [];
+  }
+}
+
+// ── Ticker-specific news: Finnhub primary + RSS/NewsAPI fallback ──
+// `window` is optional. Live callers omit it (recent default); the
+// point-in-time backtest passes { from, to } / { to } to fetch news
+// AS OF a past date through this same function.
+export async function getStockNews(
+  ticker: string,
+  companyName: string,
+  window?: NewsWindow,
+): Promise<NewsArticle[]> {
+  const { from, to, fromMs, toMs } = resolveWindow(window);
+  const results: NewsArticle[] = [];
+
+  // 1) PRIMARY: Finnhub company-news — symbol-keyed, already relevant.
+  const finnhub = await fetchFinnhubCompanyNews(ticker, from, to, fromMs, toMs);
+  results.push(...finnhub.slice(0, 5));
+
+  // 2) FALLBACK: only when Finnhub is thin, so a Finnhub miss still
+  //    yields something. The market-wide sources get the STRICT filter.
+  if (results.length < 3) {
+    try {
+      const rssArticles = await fetchRSSFeeds(fromMs, toMs);
+      const relevant = filterForTicker(rssArticles, ticker, companyName);
+      results.push(...relevant.slice(0, 3));
+    } catch (err: any) {
+      console.warn('[News] RSS fetch error:', err?.message);
+    }
+
+    try {
+      const apiKey = process.env.NEWS_API_KEY!;
+      const query = `${ticker} OR "${companyName}" stock`;
+      const res = await axios.get(`${NEWS_BASE}/everything`, {
+        params: {
+          q: query,
+          language: 'en',
+          sortBy: 'publishedAt',
+          pageSize: 8,
+          from,
+          to,
+          apiKey,
+        },
+      });
+
+      const newsApiArticles: NewsArticle[] = (res.data?.articles || [])
+        .filter((a: any) => a.title && !a.title.includes('[Removed]'))
+        .map((a: any) => ({
+          title: a.title,
+          source: a.source?.name || 'Unknown',
+          publishedAt: a.publishedAt,
+          url: a.url,
+          sentiment: classifySentiment(a.title + ' ' + (a.description || '')),
+          summary: a.description || a.title,
+        }));
+
+      // Apply the strict relevance filter to NewsAPI too (its query is
+      // an OR that pulls in loosely-related stories).
+      results.push(...filterForTicker(newsApiArticles, ticker, companyName).slice(0, 5));
+    } catch (err: any) {
+      console.error(`[News] NewsAPI error for ${ticker}:`, err?.message);
+    }
   }
 
-  // Deduplicate by title similarity and return top 5
+  // ── Single point-in-time gate over the MERGED results ─────
+  // One [fromMs, toMs] filter that every source (Finnhub, RSS, NewsAPI)
+  // passes through, so no path can leak future news into a backtest
+  // "as of T". Also closes the RSS no-pubDate edge: an item stamped
+  // publishedAt=now is dropped here in a past-window run.
+  // Undateable articles are dropped DELIBERATELY: an article we can't
+  // place in time must not be treated as visible as of any T.
+  const inWindow = results.filter(a => {
+    const t = new Date(a.publishedAt).getTime();
+    if (isNaN(t)) return false;            // unparseable date → cannot date it → exclude
+    return t >= fromMs && t <= toMs;
+  });
+
+  // Deduplicate by title (Finnhub-first ordering wins ties) and return top 5.
   const seen = new Set<string>();
-  return results.filter(a => {
+  return inWindow.filter(a => {
     const key = a.title.substring(0, 40).toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);

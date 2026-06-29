@@ -83,6 +83,11 @@ export interface StockPick {
     daysUntil: number;         // calendar days from today to that date
     withinHorizon: boolean;    // true if earnings land inside the pick's timeHorizon
   };
+  newsView?: {                 // INDEPENDENT news-only catalyst read (info-only, not in the ensemble vote)
+    direction: 'bullish' | 'neutral' | 'bearish';
+    confidence: number;        // 0-100
+    rationale: string;         // one-line, news-only justification
+  };
 }
 
 export interface WeeklyReport {
@@ -119,4 +124,10 @@ export interface PortfolioPosition {
   pnlPercent: number;
   notes: string;
   strategy?: 'PULLBACK' | 'BREAKOUT';
+  techTrend?: 'bullish' | 'bearish' | 'neutral';   // technical read at pick time (for news-vs-tech compare)
+  newsView?: {                                       // independent news-only read carried through for the dashboard
+    direction: 'bullish' | 'neutral' | 'bearish';
+    confidence: number;
+    rationale: string;
+  };
 }

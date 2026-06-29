@@ -55,6 +55,8 @@ export function addPosition(pick: StockPick): void {
     pnlPercent: 0,
     notes: pick.summary,
     strategy: pick.strategy,  // carry the PULLBACK / BREAKOUT tag through for grading
+    techTrend: pick.technicals?.trend,   // technical read at pick time
+    newsView: pick.newsView,             // independent news-only view (info-only)
   };
 
   positions.push(position);

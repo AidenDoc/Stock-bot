@@ -14,6 +14,7 @@
 import { StockQuote, TechnicalIndicators, StockPick } from './types';
 import { getQuote, getTechnicals, getCandidateTickers } from './marketData';
 import { getStockNews, getNextEarningsDate, computeEarningsGap } from './news';
+import { getNewsView } from './newsAgent';
 import { analyzeStock } from './analyst';
 import { getDynamicMovers } from './screener';
 
@@ -168,6 +169,17 @@ async function runPicks(
         if (gap.withinHorizon) {
           console.log(`[Scanner] ⚠️ ${pick!.ticker} earnings in ${gap.daysUntil}d — within ${pick!.timeHorizon} hold window`);
         }
+      }
+
+      // Info-only INDEPENDENT news view: a news-only catalyst read kept
+      // separate from the technical/ensemble vote. Reuses the news already
+      // fetched above; never blocks (null on empty news / LLM failure).
+      const newsView = await getNewsView(cand.quote.ticker, news);
+      if (newsView) {
+        pick!.newsView = newsView;
+        const tech = pick!.technicals.trend;
+        const diverges = newsView.direction !== 'neutral' && newsView.direction !== tech;
+        console.log(`[Scanner] ${diverges ? '🔀 DIVERGENCE' : '🧭'} ${pick!.ticker} news=${newsView.direction}(${newsView.confidence}) vs tech=${tech}`);
       }
 
       out.push(pick!);
