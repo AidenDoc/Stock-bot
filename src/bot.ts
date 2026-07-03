@@ -17,6 +17,7 @@ import { generateMarketOutlook, logRunSummary } from './analyst';
 import { WeeklyReport } from './types';
 import { runEvaluation } from './evaluation';
 import { updateChartData } from './chartData';
+import { writeCurrentPicks } from './currentPicks';
 
 // ── Validate env vars ──────────────────────────────────────
 const REQUIRED_ENV = [
@@ -86,6 +87,10 @@ async function runWeeklyPipeline(): Promise<void> {
     await sendWeeklyOptionsReport(report);
     await sleep(2000);
     await sendWeeklyStockReport(report);
+
+    // Snapshot the finalized week's picks (same values as the report
+    // above) to data/current-picks.json via an atomic tmp+rename write.
+    writeCurrentPicks(report);
 
     // Step 6: Add all picks to portfolio tracker (as WATCHING)
     for (const pick of allPicks) {
