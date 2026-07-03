@@ -9,7 +9,7 @@ import cron from 'node-cron';
 import { initTelegram, sendStartupMessage, sendErrorAlert, registerCommands,
          sendWeeklyOptionsReport, sendWeeklyStockReport } from './telegram';
 import { runWeeklyScan } from './scanner';
-import { runDailyCheck, addPosition } from './portfolio';
+import { runDailyCheck, addPosition, reconcilePortfolio } from './portfolio';
 import { gradePicks, getRecord, getRecentGraded } from './scorecard';
 import { sendScorecard } from './telegram';
 import { getMarketNews, getKeyEventsThisWeek } from './news';
@@ -92,6 +92,10 @@ async function runWeeklyPipeline(): Promise<void> {
       addPosition(pick);
     }
 
+    // Keep the active-picks list honest: resolve graded picks and collapse
+    // any duplicate rows before the dashboard reads portfolio.json.
+    reconcilePortfolio();
+
     // Step 7: Refresh chart history so the dashboard's Charts panel
     // has data for the new open positions.
     await updateChartData();
@@ -126,6 +130,9 @@ async function runScorecardPipeline(): Promise<void> {
   console.log('\n[Bot] 📊 Running scorecard...');
   try {
     await gradePicks(5); // grade picks at least 5 days old
+    // Resolved picks → CLOSED (out of "active picks", into graded Results)
+    // and collapse any legacy duplicate rows. Keeps the open list honest.
+    reconcilePortfolio();
     const record = getRecord();
     const recent = getRecentGraded(8);
     await sendScorecard(record, recent);
@@ -165,6 +172,14 @@ async function main() {
   if (args.includes('--scorecard')) {
     // Manual trigger: grade past picks and send scorecard
     await runScorecardPipeline();
+    process.exit(0);
+  }
+
+  if (args.includes('--reconcile')) {
+    // One-time heal of portfolio.json: close already-graded picks and
+    // collapse duplicate open rows. Safe to run anytime.
+    const { closed, deduped } = reconcilePortfolio();
+    console.log(`[Bot] Reconcile complete — closed ${closed}, deduped ${deduped}`);
     process.exit(0);
   }
 

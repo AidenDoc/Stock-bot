@@ -254,8 +254,8 @@
   <div class="stats" id="stats"></div>
 
   <div class="panel">
-    <h2>Open positions <span class="count" id="openCount"></span>
-      <span class="tag">live vs. target / stop on the underlying stock</span></h2>
+    <h2>Active picks <span class="count" id="openCount"></span>
+      <span class="tag">still being evaluated — not yet hit target / stop · paper tracking</span></h2>
     <div id="openWrap"></div>
   </div>
 
@@ -412,9 +412,9 @@
         <div class="sub">underlying, per graded pick</div>
       </div>
       <div class="stat neutral">
-        <div class="label">Open now</div>
+        <div class="label">Active picks</div>
         <div class="value num">${open}</div>
-        <div class="sub">watching + active</div>
+        <div class="sub">still being evaluated</div>
       </div>`;
   }
 
@@ -458,7 +458,7 @@
   function renderOpen() {
     const open = portfolio.filter(p => p.status !== "CLOSED");
     $("openCount").textContent = open.length ? "(" + open.length + ")" : "";
-    if (!open.length) { $("openWrap").innerHTML = `<div class="empty">No open positions. Run the bot to add picks.</div>`; return; }
+    if (!open.length) { $("openWrap").innerHTML = `<div class="empty">No active picks. Run the bot to add picks.</div>`; return; }
 
     const options = open.filter(p => p.pickType === "OPTIONS_CALL");
     const stocks  = open.filter(p => p.pickType !== "OPTIONS_CALL");

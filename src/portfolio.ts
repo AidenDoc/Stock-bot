@@ -16,6 +16,7 @@ import {
 } from './telegram';
 
 const DB_FILE = path.join(process.cwd(), 'data', 'portfolio.json');
+const SCORECARD_FILE = path.join(process.cwd(), 'data', 'scorecard.json');
 
 // ── Load / Save ────────────────────────────────────────────
 function loadPortfolio(): PortfolioPosition[] {
@@ -27,19 +28,60 @@ function loadPortfolio(): PortfolioPosition[] {
   }
 }
 
+// Minimal shape of a graded pick — we only read it here (grading itself
+// lives in scorecard.ts and is left untouched).
+interface GradedLite {
+  ticker: string;
+  pickedDate: string;   // === the position's addedDate at grade time
+  finalPrice?: number;
+  stockReturnPct?: number;
+}
+
+function loadGraded(): GradedLite[] {
+  try {
+    if (!fs.existsSync(SCORECARD_FILE)) return [];
+    const h = JSON.parse(fs.readFileSync(SCORECARD_FILE, 'utf-8'));
+    return Array.isArray(h?.graded) ? h.graded : [];
+  } catch {
+    return [];
+  }
+}
+
 function savePortfolio(positions: PortfolioPosition[]): void {
   const dir = path.dirname(DB_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(DB_FILE, JSON.stringify(positions, null, 2));
 }
 
+// Two open rows are "the same pick" when they share ticker AND strategy and
+// neither has resolved yet. (Legacy rows have no strategy → treated as ''.)
+function sameOpenPick(p: PortfolioPosition, ticker: string, strategy?: string): boolean {
+  return p.status !== 'CLOSED'
+    && p.ticker === ticker
+    && (p.strategy ?? '') === (strategy ?? '');
+}
+
 // ── Add position from a pick ───────────────────────────────
 export function addPosition(pick: StockPick): void {
   const positions = loadPortfolio();
 
-  // Don't add duplicates
-  if (positions.find(p => p.ticker === pick.ticker && p.status === 'ACTIVE')) {
-    console.log(`[Portfolio] ${pick.ticker} already in portfolio`);
+  // One row per ticker+strategy while a pick is still being evaluated.
+  // If we're already tracking this name+strategy, refresh that row in place
+  // rather than appending a duplicate (the weekly scan re-picks names).
+  const existing = positions.find(p => sameOpenPick(p, pick.ticker, pick.strategy));
+  if (existing) {
+    // Keep the original entryPrice + addedDate so the P&L basis and the
+    // grading/evaluation clock stay anchored to the FIRST time we logged it;
+    // just freshen the live targets and the info-only reads.
+    existing.currentPrice = pick.currentPrice;
+    existing.targetPrice  = pick.targetPrice;
+    existing.stopLoss     = pick.stopLoss;
+    existing.pickType     = pick.pickType;
+    existing.notes        = pick.summary;
+    existing.techTrend    = pick.technicals?.trend;
+    existing.newsView     = pick.newsView;
+    savePortfolio(positions);
+    console.log(`[Portfolio] ${pick.ticker} (${pick.strategy || 'n/a'}) already tracked — refreshed in place`);
     return;
   }
 
@@ -91,6 +133,68 @@ export function closePosition(ticker: string, exitPrice?: number): void {
   pos.status = 'CLOSED';
   savePortfolio(positions);
   console.log(`[Portfolio] ${ticker} closed. P&L: ${pos.pnlPercent.toFixed(1)}%`);
+}
+
+// ── Reconcile the tracker so "active picks" stays honest ───
+// Two clean-ups, both idempotent and safe to run every pipeline:
+//   1. RESOLVE — any position that already has a graded record is settled.
+//      It belongs in the graded Results, not in the live list, so close it.
+//      (Grading itself is untouched; we only follow it.)
+//   2. DEDUPE — collapse legacy duplicate open rows for the same
+//      ticker+strategy into one canonical row (older code appended a new row
+//      on every weekly scan). Earliest add keeps the evaluation clock; the
+//      newest pick supplies the current targets/notes.
+export function reconcilePortfolio(): { closed: number; deduped: number } {
+  const positions = loadPortfolio();
+  let closed = 0;
+  let deduped = 0;
+
+  // 1) Resolve already-graded picks → CLOSED.
+  const gradedByKey = new Map<string, GradedLite>();
+  for (const g of loadGraded()) gradedByKey.set(`${g.ticker}_${g.pickedDate}`, g);
+
+  for (const p of positions) {
+    if (p.status === 'CLOSED') continue;
+    const g = gradedByKey.get(`${p.ticker}_${p.addedDate}`);
+    if (g) {
+      p.status = 'CLOSED';
+      if (typeof g.finalPrice === 'number') p.currentPrice = g.finalPrice;
+      if (typeof g.stockReturnPct === 'number') p.pnlPercent = g.stockReturnPct;
+      closed++;
+    }
+  }
+
+  // 2) Dedupe the still-open rows by ticker+strategy.
+  const groups = new Map<string, PortfolioPosition[]>();
+  for (const p of positions) {
+    if (p.status === 'CLOSED') continue;
+    const key = `${p.ticker}|${p.strategy ?? ''}`;
+    const grp = groups.get(key);
+    if (grp) grp.push(p); else groups.set(key, [p]);
+  }
+
+  const drop = new Set<PortfolioPosition>();
+  for (const grp of groups.values()) {
+    if (grp.length < 2) continue;
+    const sorted = [...grp].sort(
+      (a, b) => new Date(a.addedDate).getTime() - new Date(b.addedDate).getTime()
+    );
+    const canonical = sorted[0];                 // earliest add = canonical
+    const newest = sorted[sorted.length - 1];    // newest pick = fresh targets
+    canonical.currentPrice = newest.currentPrice;
+    canonical.targetPrice  = newest.targetPrice;
+    canonical.stopLoss     = newest.stopLoss;
+    canonical.pickType     = newest.pickType;
+    canonical.notes        = newest.notes;
+    canonical.techTrend    = newest.techTrend;
+    canonical.newsView     = newest.newsView;
+    for (let i = 1; i < sorted.length; i++) { drop.add(sorted[i]); deduped++; }
+  }
+
+  const cleaned = positions.filter(p => !drop.has(p));
+  savePortfolio(cleaned);
+  console.log(`[Portfolio] Reconcile: closed ${closed} resolved pick(s), removed ${deduped} duplicate row(s)`);
+  return { closed, deduped };
 }
 
 // ── Daily check — update prices, fire alerts ──────────────
