@@ -32,27 +32,70 @@ function loadJSON<T>(file: string, fallback: T): T {
   }
 }
 
+// Telegram rejects messages over 4096 chars (400 "message is too long").
+// Split on line boundaries so HTML tags/entities (which never span lines in
+// our formatters) stay intact, and leave headroom for the continuation marker.
+const TG_CHUNK_LIMIT = 3900;
+
+export function chunkMessage(message: string): string[] {
+  if (message.length <= TG_CHUNK_LIMIT) return [message];
+
+  const chunks: string[] = [];
+  let current = '';
+  for (const line of message.split('\n')) {
+    // A single line longer than the limit gets hard-split (shouldn't happen
+    // with our formatters, but never let one line brick the whole send).
+    let rest = line;
+    while (rest.length > TG_CHUNK_LIMIT) {
+      if (current) { chunks.push(current); current = ''; }
+      chunks.push(rest.slice(0, TG_CHUNK_LIMIT));
+      rest = rest.slice(TG_CHUNK_LIMIT);
+    }
+    const candidate = current ? `${current}\n${rest}` : rest;
+    if (candidate.length > TG_CHUNK_LIMIT) {
+      chunks.push(current);
+      current = rest;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) chunks.push(current);
+
+  const total = chunks.length;
+  return chunks.map((c, i) => {
+    const head = i > 0 ? `<i>…continued (${i + 1}/${total})</i>\n` : '';
+    const tail = i < total - 1 ? `\n<i>⤵️ continued in next message</i>` : '';
+    return head + c + tail;
+  });
+}
+
 async function send(message: string, parseMode: 'HTML' | 'Markdown' = 'HTML'): Promise<void> {
-  try {
-    await bot.sendMessage(getChatId(), message, {
-      parse_mode: parseMode,
-      disable_web_page_preview: true,
-    });
+  for (const chunk of chunkMessage(message)) {
+    try {
+      await bot.sendMessage(getChatId(), chunk, {
+        parse_mode: parseMode,
+        disable_web_page_preview: true,
+      });
+    } catch (err: any) {
+      console.error('[Telegram] Send error:', err?.message);
+    }
     await sleep(500);
-  } catch (err: any) {
-    console.error('[Telegram] Send error:', err?.message);
   }
 }
 
 // Reply to a specific chat (used by command handlers)
 async function reply(chatId: number | string, message: string): Promise<void> {
-  try {
-    await bot.sendMessage(chatId, message, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: false, // allow the dashboard link preview
-    });
-  } catch (err: any) {
-    console.error('[Telegram] Reply error:', err?.message);
+  const chunks = chunkMessage(message);
+  for (let i = 0; i < chunks.length; i++) {
+    if (i > 0) await sleep(500); // pace multi-chunk replies only
+    try {
+      await bot.sendMessage(chatId, chunks[i], {
+        parse_mode: 'HTML',
+        disable_web_page_preview: false, // allow the dashboard link preview
+      });
+    } catch (err: any) {
+      console.error('[Telegram] Reply error:', err?.message);
+    }
   }
 }
 
