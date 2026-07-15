@@ -18,6 +18,7 @@ import { WeeklyReport } from './types';
 import { runEvaluation } from './evaluation';
 import { updateChartData } from './chartData';
 import { writeCurrentPicks } from './currentPicks';
+import { nyseHoliday } from './marketCalendar';
 
 // ── Validate env vars ──────────────────────────────────────
 const REQUIRED_ENV = [
@@ -202,14 +203,25 @@ async function main() {
   }
 
   // ── Schedule cron jobs ────────────────────────────────────
-  const weeklyCron = process.env.WEEKLY_CRON || '0 8 * * 1'; // Monday 8am
+  // Weekly scan: Monday 10:15am ET — moved from 8:00am on 2026-07-15
+  // (first run at the new time: Monday 2026-07-20). 45 minutes after the
+  // open, the opening auction has settled and Friday's daily bar is final
+  // at every data source. Signals (RSI/SMA/MACD, volumeRatio) come from
+  // completed daily bars only; the live quote is used solely for the
+  // entry price (see marketData.ts / marketCalendar.isBarComplete).
+  const weeklyCron = process.env.WEEKLY_CRON || '15 10 * * 1';
   const dailyCron = process.env.DAILY_CRON || '0 9 * * 1-5';  // Weekdays 9am
 
   console.log(`[Bot] Scheduling weekly picks: ${weeklyCron}`);
   console.log(`[Bot] Scheduling daily check: ${dailyCron}`);
 
-  // Weekly picks — Monday morning before market open
+  // Weekly picks — Monday after the open (see schedule note above)
   cron.schedule(weeklyCron, async () => {
+    const holiday = nyseHoliday();
+    if (holiday) {
+      console.log(`[Cron] Market closed (${holiday}) — skipping weekly scan.`);
+      return;
+    }
     console.log('[Cron] Triggering weekly scorecard + picks...');
     await runScorecardPipeline();  // grade last week's picks first
     await runWeeklyPipeline();      // then send this week's

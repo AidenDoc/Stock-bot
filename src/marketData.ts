@@ -5,6 +5,7 @@
 
 import axios from 'axios';
 import { StockQuote, TechnicalIndicators, OptionsData } from './types';
+import { isBarComplete } from './marketCalendar';
 
 const YF_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -94,13 +95,25 @@ export async function getQuote(ticker: string): Promise<StockQuote | null> {
       if (rawCloses5d[i] != null) lastBarDate = new Date(ts5d[i] * 1000).toISOString().slice(0, 10);
     }
 
+    // Volume from the last COMPLETED daily bar. regularMarketVolume is the
+    // in-progress day's running total during market hours — a 10:15am scan
+    // would see ~45 minutes of Monday volume and misread liquidity and
+    // volumeRatio for every ticker. Only the live PRICE is quote-time.
+    const vols5d: (number | null)[] = result.indicators?.quote?.[0]?.volume || [];
+    let volume = meta.regularMarketVolume || 0;
+    for (let i = ts5d.length - 1; i >= 0; i--) {
+      if (rawCloses5d[i] == null) continue;
+      const barDate = new Date(ts5d[i] * 1000).toISOString().slice(0, 10);
+      if (isBarComplete(barDate) && vols5d[i]) { volume = vols5d[i]!; break; }
+    }
+
     return {
       ticker: ticker.toUpperCase(),
       name,
       price,
       change,
       changePercent,
-      volume: meta.regularMarketVolume || 0,
+      volume,
       avgVolume,
       change5dPct,
       lastBarDate,
@@ -180,7 +193,20 @@ export async function getTechnicals(ticker: string, price: number): Promise<Tech
     const result = res.data?.chart?.result?.[0];
     if (!result) return computeTechnicals(ticker, [], price);
 
-    const closes: number[] = result.indicators?.quote?.[0]?.close?.filter((c: any) => c != null) || [];
+    // Completed daily bars ONLY — during market hours Yahoo appends the
+    // in-progress day as a final row, and feeding a half-formed bar into
+    // RSI/SMA/MACD makes signals drift with the intraday tape. The live
+    // quote is reserved for entry pricing, never for indicators.
+    const ts: number[] = result.timestamp || [];
+    const rawCloses: (number | null)[] = result.indicators?.quote?.[0]?.close || [];
+    const closes: number[] = [];
+    for (let i = 0; i < rawCloses.length; i++) {
+      const c = rawCloses[i];
+      if (c == null) continue;
+      const barDate = new Date((ts[i] ?? 0) * 1000).toISOString().slice(0, 10);
+      if (!isBarComplete(barDate)) continue;
+      closes.push(c);
+    }
     return computeTechnicals(ticker, closes, price);
   } catch (err: any) {
     console.error(`[MarketData] getTechnicals error for ${ticker}:`, err?.message);

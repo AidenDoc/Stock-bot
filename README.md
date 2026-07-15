@@ -4,10 +4,10 @@ Built on the same architecture as your Kalshi Bot. Sends weekly stock & options 
 
 ## Features
 
-- **Weekly Options Picks** (3 picks, every Monday 8am ET)
+- **Weekly Options Picks** (3 picks, every Monday 10:15am ET; skips market holidays)
   - Entry zone, strike, expiration, breakeven, max loss/gain
   - Robinhood-ready order details
-- **Weekly Stock Picks** (3-4 picks, every Monday 8am ET)
+- **Weekly Stock Picks** (3-4 picks, every Monday 10:15am ET; skips market holidays)
   - Entry/exit levels, stop loss, R/R ratio
   - Technical analysis + news sentiment
 - **Daily Position Updates** (Weekdays 9am ET)
