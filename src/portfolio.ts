@@ -6,7 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { PortfolioPosition, StockPick, DailyUpdate } from './types';
-import { getQuote } from './marketData';
+import { getQuote, getSplitAdjustment } from './marketData';
 import { getStockNews } from './news';
 import { generatePositionUpdate } from './analyst';
 import {
@@ -213,6 +213,24 @@ export async function runDailyCheck(): Promise<void> {
   for (const pos of positions) {
     const quote = await getQuote(pos.ticker);
     if (!quote) continue;
+
+    // A split since this position was opened (or last checked) leaves its
+    // stored entry/target/stop stuck at the pre-split scale while every new
+    // quote comes back post-split — rescale them down once so comparisons
+    // (and the alerts below) stay accurate instead of tripping a false
+    // stop-loss warning. Tracked incrementally via splitAdjustedThrough so
+    // a daily re-check never double-adjusts the same split.
+    const { ratio: splitRatio, events: splitEvents } = await getSplitAdjustment(
+      pos.ticker, pos.splitAdjustedThrough || pos.addedDate
+    );
+    if (splitRatio !== 1) {
+      pos.entryPrice /= splitRatio;
+      pos.targetPrice /= splitRatio;
+      pos.stopLoss /= splitRatio;
+      pos.notes += ` [rescaled for ${splitEvents.map(e => `${e.ratioText} split on ${e.date}`).join(', ')}]`;
+      console.log(`[Portfolio] ${pos.ticker}: rescaled entry/target/stop for ${splitEvents.map(e => e.ratioText).join(', ')} split`);
+    }
+    pos.splitAdjustedThrough = new Date().toISOString();
 
     const currentPrice = quote.price;
     pos.currentPrice = currentPrice;

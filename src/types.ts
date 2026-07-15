@@ -131,4 +131,5 @@ export interface PortfolioPosition {
     confidence: number;
     rationale: string;
   };
+  splitAdjustedThrough?: string;   // ISO date — entry/target/stop already rescaled for any splits up to here
 }

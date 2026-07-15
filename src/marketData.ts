@@ -177,6 +177,91 @@ export async function getTechnicals(ticker: string, price: number): Promise<Tech
   }
 }
 
+// ── Split detection ─────────────────────────────────────────
+// Yahoo's chart endpoint retroactively split-adjusts its ENTIRE returned
+// OHLC series to the scale in effect at query time — so a price captured
+// and stored (entry/target/stop) before a later split silently drifts out
+// of scale with every subsequent quote/bar fetch. This returns the
+// cumulative multiplier needed to bring a RAW price fetched now back into
+// the scale that was in effect on `sinceDate`, plus the events themselves
+// (for logging/notes). ratio === 1 when no split occurred in the window.
+export interface SplitEvent {
+  date: string;        // YYYY-MM-DD, effective date
+  ratioText: string;   // e.g. "4:1"
+}
+
+export interface SplitAdjustment {
+  ratio: number;
+  events: SplitEvent[];
+}
+
+export async function getSplitAdjustment(ticker: string, sinceDate: string): Promise<SplitAdjustment> {
+  const none: SplitAdjustment = { ratio: 1, events: [] };
+  try {
+    const since = new Date(sinceDate);
+    const now = new Date();
+    if (isNaN(since.getTime()) || since.getTime() >= now.getTime()) return none;
+
+    const days = Math.ceil((now.getTime() - since.getTime()) / 86400000) + 5;
+    const range = days <= 30 ? '1mo' : days <= 90 ? '3mo' : days <= 180 ? '6mo'
+      : days <= 365 ? '1y' : days <= 730 ? '2y' : '5y';
+
+    const res = await axios.get(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}`,
+      { params: { interval: '1d', range, events: 'splits' }, headers: YF_HEADERS, timeout: 10000 }
+    );
+
+    const splits = res.data?.chart?.result?.[0]?.events?.splits;
+    if (!splits) return none;
+
+    let ratio = 1;
+    const events: SplitEvent[] = [];
+    for (const s of Object.values<any>(splits)) {
+      const eventMs = s.date * 1000;
+      if (eventMs > since.getTime() && eventMs <= now.getTime()) {
+        ratio *= s.numerator / s.denominator;
+        events.push({
+          date: new Date(eventMs).toISOString().slice(0, 10),
+          ratioText: s.splitRatio || `${s.numerator}:${s.denominator}`,
+        });
+      }
+    }
+    return events.length ? { ratio, events } : none;
+  } catch (err: any) {
+    console.error(`[MarketData] getSplitAdjustment error for ${ticker}:`, err?.message);
+    return none;
+  }
+}
+
+// ── Close price on or before a given date (for benchmark comparisons) ──
+export async function getCloseOnOrBefore(ticker: string, dateISO: string): Promise<number | null> {
+  try {
+    const target = new Date(dateISO);
+    if (isNaN(target.getTime())) return null;
+    const period1 = Math.floor(target.getTime() / 1000) - 86400 * 10; // covers long weekends/holidays
+    const period2 = Math.floor(target.getTime() / 1000) + 86400;
+
+    const res = await axios.get(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}`,
+      { params: { interval: '1d', period1, period2 }, headers: YF_HEADERS, timeout: 10000 }
+    );
+
+    const result = res.data?.chart?.result?.[0];
+    if (!result) return null;
+    const ts: number[] = result.timestamp || [];
+    const closes: number[] = result.indicators?.quote?.[0]?.close || [];
+
+    let best: number | null = null;
+    for (let i = 0; i < ts.length; i++) {
+      if (ts[i] * 1000 <= target.getTime() && closes[i] != null) best = closes[i];
+    }
+    return best;
+  } catch (err: any) {
+    console.error(`[MarketData] getCloseOnOrBefore error for ${ticker}:`, err?.message);
+    return null;
+  }
+}
+
 // ── Technical indicator math ───────────────────────────────
 function sma(closes: number[], period: number): number | null {
   if (closes.length < period) return null;

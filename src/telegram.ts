@@ -171,11 +171,26 @@ export function registerCommands(): void {
     }
     const winRate = ((wins / total) * 100).toFixed(0);
     const avg = (graded.reduce((s, g) => s + (g.stockReturnPct || 0), 0) / total).toFixed(1);
+
+    const excessLines = ['PULLBACK', 'BREAKOUT'].map(strat => {
+      const vals = graded
+        .filter(g => g.strategy === strat && typeof g.excessReturnPct === 'number')
+        .map(g => g.excessReturnPct as number);
+      if (vals.length === 0) return `${strat}: no benchmark data yet`;
+      const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+      const med = median(vals);
+      const fmt = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`;
+      return `${strat}: mean ${fmt(mean)}, median ${fmt(med)} vs SPY (n=${vals.length})`;
+    });
+
     await reply(msg.chat.id, [
       '📊 <b>Record</b>',
       '',
       `${wins}W / ${losses}L (${winRate}% win rate) across ${total} graded picks.`,
       `Avg stock move per pick: ${Number(avg) >= 0 ? '+' : ''}${avg}%`,
+      '',
+      '<b>Excess return vs SPY:</b>',
+      ...excessLines,
       '',
       '<i>Outcomes track the underlying stock vs. target/stop.</i>',
     ].join('\n'));
@@ -356,6 +371,26 @@ export async function sendErrorAlert(component: string, error: string): Promise<
   await send(`⚠️ <b>Stock Bot Error</b>\n<b>${component}:</b> ${error}`);
 }
 
+export async function sendGradingReviewAlert(
+  ticker: string, pickedDate: string, entryPrice: number, finalPrice: number,
+  returnPct: number, splitEvents: { date: string; ratioText: string }[]
+): Promise<void> {
+  const splitNote = splitEvents.length
+    ? `Detected split(s): ${splitEvents.map(e => `${e.ratioText} on ${e.date}`).join(', ')} (already adjusted for).`
+    : `No split detected — this move looks real or the data is bad.`;
+  const msg = [
+    `🚨 <b>GRADING FLAGGED FOR REVIEW</b> 🚨`,
+    ``,
+    `<b>${ticker}</b> (picked ${pickedDate.slice(0, 10)}) computed a ${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(1)}% move — over the ±50% safety threshold, so it was NOT auto-graded.`,
+    `Entry: $${entryPrice.toFixed(2)} → Final: $${finalPrice.toFixed(2)}`,
+    splitNote,
+    ``,
+    `⛔ <b>ACTION: check this pick manually before it grades.</b>`,
+  ].join('\n');
+
+  await send(msg);
+}
+
 export async function sendScorecard(
   record: { total: number; wins: number; losses: number; winRate: number; avgStockReturn: number; optionsRecord: { wins: number; losses: number }; stockRecord: { wins: number; losses: number } },
   recent: { ticker: string; pickType: string; outcome: string; stockReturnPct: number; note: string }[]
@@ -515,4 +550,10 @@ function truncate(str: string, maxLen: number): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function median(nums: number[]): number {
+  const sorted = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }

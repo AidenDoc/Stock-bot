@@ -8,8 +8,14 @@
 import fs from 'fs';
 import path from 'path';
 import { PortfolioPosition } from './types';
-import { getQuote } from './marketData';
+import { getQuote, getSplitAdjustment, getCloseOnOrBefore, SplitEvent } from './marketData';
 import { recordOutcome } from './memory/tradeMemory';
+import { sendGradingReviewAlert } from './telegram';
+
+// Picks whose computed return exceeds this magnitude don't get auto-graded —
+// they're flagged for manual review instead (split-adjustment fixes normal
+// splits; this catches anything else: bad data, unhandled corporate actions).
+const RETURN_SAFETY_THRESHOLD_PCT = 50;
 
 const DB_FILE = path.join(process.cwd(), 'data', 'portfolio.json');
 const HISTORY_FILE = path.join(process.cwd(), 'data', 'scorecard.json');
@@ -33,6 +39,10 @@ export interface GradedPick {
   //    existing stock-drift grade, never replacing it) ──
   optReturnPct?: number;            // Black-Scholes contract P&L % over the same hold
   optOutcome?: 'WIN' | 'LOSS';      // option WIN/LOSS by contract P&L sign (≠ stock outcome)
+  // Benchmark: this pick's stockReturnPct minus SPY's return over the same
+  // pickedDate → gradedDate window. Absent on picks graded before this field
+  // existed.
+  excessReturnPct?: number;
 }
 
 interface ScorecardHistory {
@@ -85,9 +95,22 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
     const quote = await getQuote(pos.ticker);
     if (!quote) continue;
 
-    const finalPrice = quote.price;
+    // A split between pickedDate and now silently rescales every later raw
+    // quote — bring it back to the scale entry/target/stop were set in
+    // before comparing against them.
+    const { ratio: splitRatio, events: splitEvents } = await getSplitAdjustment(pos.ticker, pos.addedDate);
+    const finalPrice = parseFloat((quote.price * splitRatio).toFixed(2));
     const entry = pos.entryPrice;
     const stockReturnPct = ((finalPrice - entry) / entry) * 100;
+
+    // Safety net: split-adjustment fixes normal splits, but anything else
+    // producing a huge move (bad data, an unhandled corporate action) gets
+    // flagged for manual review instead of silently auto-grading.
+    if (Math.abs(stockReturnPct) > RETURN_SAFETY_THRESHOLD_PCT) {
+      console.warn(`[Scorecard] ${pos.ticker}: computed return ${stockReturnPct.toFixed(1)}% exceeds ±${RETURN_SAFETY_THRESHOLD_PCT}% safety threshold — skipping auto-grade, flagged for review`);
+      await sendGradingReviewAlert(pos.ticker, pos.addedDate, entry, finalPrice, stockReturnPct, splitEvents);
+      continue;  // leave ungraded — retried on the next grading run
+    }
 
     let outcome: 'WIN' | 'LOSS' | 'OPEN' = 'OPEN';
     let note = '';
@@ -101,6 +124,20 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
       outcome = stockReturnPct >= 0 ? 'WIN' : 'LOSS';
       note = `Closed between levels (${stockReturnPct >= 0 ? 'up' : 'down'})`;
     }
+    if (splitEvents.length) {
+      note += ` (adjusted for ${splitEvents.map((e: SplitEvent) => `${e.ratioText} split on ${e.date}`).join(', ')})`;
+    }
+
+    const gradedDate = new Date().toISOString();
+
+    // Benchmark: excess return vs SPY over the same hold window.
+    let excessReturnPct: number | undefined;
+    const spyStart = await getCloseOnOrBefore('SPY', pos.addedDate);
+    const spyEnd = await getCloseOnOrBefore('SPY', gradedDate);
+    if (spyStart && spyEnd) {
+      const spyReturnPct = ((spyEnd - spyStart) / spyStart) * 100;
+      excessReturnPct = parseFloat((stockReturnPct - spyReturnPct).toFixed(2));
+    }
 
     const graded: GradedPick = {
       ticker: pos.ticker,
@@ -111,10 +148,11 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
       stopLoss: pos.stopLoss,
       finalPrice,
       pickedDate: pos.addedDate,
-      gradedDate: new Date().toISOString(),
+      gradedDate,
       outcome,
       stockReturnPct: parseFloat(stockReturnPct.toFixed(2)),
       note,
+      excessReturnPct,
     };
 
     history.graded.push(graded);
