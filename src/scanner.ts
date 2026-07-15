@@ -11,12 +11,13 @@
 // scorecard and dashboard can compare them separately.
 // ============================================================
 
-import { StockQuote, TechnicalIndicators, StockPick } from './types';
+import { StockQuote, TechnicalIndicators, StockPick, NewsArticle } from './types';
 import { getQuote, getTechnicals, getCandidateTickers } from './marketData';
 import { getStockNews, getNextEarningsDate, computeEarningsGap } from './news';
 import { getNewsView } from './newsAgent';
 import { analyzeStock } from './analyst';
 import { getDynamicMovers } from './screener';
+import { getMemoryContext, recordPick, TradeFeatures, NewsVerdict } from './memory/tradeMemory';
 
 export type StrategyTag = 'PULLBACK' | 'BREAKOUT';
 
@@ -131,6 +132,36 @@ export function scorePullback(row: MarketRow): ScoredCandidate | null {
   return { quote, technicals, score, optionsScore, reasons, strategy: 'PULLBACK' };
 }
 
+// ── Trade-memory feature capture ────────────────────────────
+// The pullback/breakout screens already compute RSI, SMA distance and
+// volume — this captures them at the moment of the pick instead of
+// discarding them, so the memory bank can find similar past setups.
+function pickFeatures(cand: ScoredCandidate, newsVerdict: NewsVerdict): TradeFeatures {
+  const { quote, technicals } = cand;
+  return {
+    rsi: technicals.rsi,
+    pctFromSma20: technicals.sma20
+      ? ((quote.price - technicals.sma20) / technicals.sma20) * 100
+      : null,
+    volumeRatio: quote.avgVolume > 0 ? quote.volume / quote.avgVolume : null,
+    change5dPct: quote.change5dPct ?? null,
+    newsVerdict,
+  };
+}
+
+// Cheap headline-sentiment majority, used only as the retrieval query's
+// news verdict. The live news agent (getNewsView) runs AFTER a pick
+// qualifies (to save LLM quota), so its authoritative verdict is what
+// gets STORED on the record; this proxy just steers the similarity bonus.
+function newsVerdictFromSentiment(news: NewsArticle[]): NewsVerdict {
+  if (news.length === 0) return 'none';
+  const pos = news.filter(n => n.sentiment === 'positive').length;
+  const neg = news.filter(n => n.sentiment === 'negative').length;
+  if (pos > neg) return 'bullish';
+  if (neg > pos) return 'bearish';
+  return 'neutral';
+}
+
 // ── Run AI analysis on a ranked candidate list for one type ──
 async function runPicks(
   candidates: ScoredCandidate[],
@@ -146,7 +177,18 @@ async function runPicks(
     if (analyzed.has(cand.quote.ticker)) continue;
 
     const news = await getStockNews(cand.quote.ticker, cand.quote.name);
-    const pick = await analyzeStock(cand.quote, cand.technicals, news, pickType);
+
+    // Pull similar past graded trades for this strategy (unavailable until
+    // 10 closed trades exist per strategy — that's intentional) and show
+    // them to the ensemble alongside the market data.
+    const features = pickFeatures(cand, newsVerdictFromSentiment(news));
+    const memCtx = getMemoryContext(strategyTag, features);
+    if (memCtx.available) {
+      console.log(`[Scanner] 🧠 ${cand.quote.ticker}: showing ${memCtx.neighbors.length} similar past ${strategyTag} trades to the ensemble`);
+    }
+
+    const pick = await analyzeStock(cand.quote, cand.technicals, news, pickType,
+      memCtx.available ? memCtx.promptBlock : undefined);
 
     const modelsWorking = pick ? (pick.voteBreakdown?.split('⚠️').length ?? 1) - 1 : 0;
     const fullEnsemble = modelsWorking <= 1; // 3+ models actually voted
@@ -181,6 +223,24 @@ async function runPicks(
         const diverges = newsView.direction !== 'neutral' && newsView.direction !== tech;
         console.log(`[Scanner] ${diverges ? '🔀 DIVERGENCE' : '🧭'} ${pick!.ticker} news=${newsView.direction}(${newsView.confidence}) vs tech=${tech}`);
       }
+
+      // Record the accepted pick in the trade memory bank. Stored
+      // newsVerdict comes from the live news agent when it produced a
+      // view; memoryShown is the A/B flag for the head-to-head eval.
+      recordPick({
+        ticker: pick!.ticker,
+        strategy: strategyTag,
+        scanDate: pick!.addedAt,
+        entry: pick!.currentPrice,
+        target: pick!.targetPrice,
+        stop: pick!.stopLoss,
+        features: {
+          ...features,
+          newsVerdict: pick!.newsView ? pick!.newsView.direction : features.newsVerdict,
+        },
+        ensemble: { consensusScore: pick!.confidenceScore, votes: pick!.voteBreakdown ?? '' },
+        memoryShown: memCtx.available,
+      });
 
       out.push(pick!);
       console.log(`[Scanner] ✅ ${strategyTag} ${pickType === 'OPTIONS_CALL' ? 'OPTIONS' : 'STOCK'} PICK: ${pick!.ticker} (${pick!.confidenceScore}/100, R/R ${pick!.riskRewardRatio})`);

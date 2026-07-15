@@ -10,6 +10,7 @@ export interface StockQuote {
   changePercent: number;
   volume: number;
   avgVolume: number;
+  change5dPct?: number | null;  // 5-day % move (from the 5d closes getQuote already fetches)
   marketCap: number;
   pe: number | null;
   week52High: number;

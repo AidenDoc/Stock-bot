@@ -196,7 +196,8 @@ function buildPrompt(
   technicals: TechnicalIndicators,
   news: NewsArticle[],
   pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
-  modelRole: string
+  modelRole: string,
+  memoryBlock?: string
 ): string {
   const newsText = news.map(n =>
     `[${n.sentiment.toUpperCase()}] ${n.source}: ${n.title}`
@@ -226,7 +227,7 @@ Support: $${technicals.support?.toFixed(2) || 'N/A'} | Resistance: $${technicals
 
 RECENT NEWS (last 5 days):
 ${newsText || 'No recent news found.'}
-
+${memoryBlock ? `\n${memoryBlock}\n` : ''}
 Respond ONLY with a JSON object (no markdown, no preamble):
 {
   "shouldPick": true/false,
@@ -283,11 +284,12 @@ async function askClaude(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG'
+  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
+  memoryBlock?: string
 ): Promise<ModelVote> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
   const prompt = buildPrompt(quote, technicals, news, pickType,
-    'an expert stock trader specializing in fundamental analysis and market sentiment');
+    'an expert stock trader specializing in fundamental analysis and market sentiment', memoryBlock);
 
   try {
     const response = await callModel('claude', () => client.messages.create({
@@ -308,10 +310,11 @@ async function askGPT4o(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG'
+  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
+  memoryBlock?: string
 ): Promise<ModelVote> {
   const prompt = buildPrompt(quote, technicals, news, pickType,
-    'an expert technical analyst and options trader focused on chart patterns and momentum');
+    'an expert technical analyst and options trader focused on chart patterns and momentum', memoryBlock);
 
   try {
     const response = await callModel('gpt4o', () => axios.post(
@@ -337,10 +340,11 @@ async function askGemini(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG'
+  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
+  memoryBlock?: string
 ): Promise<ModelVote> {
   const prompt = buildPrompt(quote, technicals, news, pickType,
-    'an expert analyst specializing in news-driven catalysts, sector rotation, and macro trends');
+    'an expert analyst specializing in news-driven catalysts, sector rotation, and macro trends', memoryBlock);
 
   try {
     const response = await callModel('gemini', () => axios.post(
@@ -363,10 +367,11 @@ async function askGroq(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG'
+  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
+  memoryBlock?: string
 ): Promise<ModelVote> {
   const prompt = buildPrompt(quote, technicals, news, pickType,
-    'a risk-focused trader who weighs both upside and downside fairly. Approve solid setups but flag genuine red flags');
+    'a risk-focused trader who weighs both upside and downside fairly. Approve solid setups but flag genuine red flags', memoryBlock);
 
   try {
     const response = await callModel('groq', () => axios.post(
@@ -488,7 +493,8 @@ export async function analyzeStock(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG'
+  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
+  memoryBlock?: string
 ): Promise<StockPick | null> {
 
   console.log(`[Analyst] Running 4-model ensemble on ${quote.ticker}...`);
@@ -497,11 +503,13 @@ export async function analyzeStock(
   // (module scope) space each provider's calls under its cap, so
   // there's no need to hand-stagger Gemini/Groq anymore. Different
   // providers don't share limits, so they genuinely overlap.
+  // memoryBlock (similar past graded trades, when available) goes to
+  // all four models identically — same shared prompt, one extra section.
   const [claudeVote, gpt4oVote, geminiVote, groqVote] = await Promise.all([
-    askClaude(quote, technicals, news, pickType),
-    askGPT4o(quote, technicals, news, pickType),
-    askGemini(quote, technicals, news, pickType),
-    askGroq(quote, technicals, news, pickType),
+    askClaude(quote, technicals, news, pickType, memoryBlock),
+    askGPT4o(quote, technicals, news, pickType, memoryBlock),
+    askGemini(quote, technicals, news, pickType, memoryBlock),
+    askGroq(quote, technicals, news, pickType, memoryBlock),
   ]);
 
   const votes = [claudeVote, gpt4oVote, geminiVote, groqVote];

@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { PortfolioPosition } from './types';
 import { getQuote } from './marketData';
+import { recordOutcome } from './memory/tradeMemory';
 
 const DB_FILE = path.join(process.cwd(), 'data', 'portfolio.json');
 const HISTORY_FILE = path.join(process.cwd(), 'data', 'scorecard.json');
@@ -118,6 +119,21 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
 
     history.graded.push(graded);
     newlyGraded.push(graded);
+
+    // Close the matching trade-memory record with the same verdict the
+    // scorecard just reached. Idempotent — regrades/reconciles can't
+    // double-close it.
+    recordOutcome({
+      ticker: pos.ticker,
+      strategy: pos.strategy,
+      scanDate: pos.addedDate,
+      status: finalPrice >= pos.targetPrice ? 'HIT_TARGET'
+        : finalPrice <= pos.stopLoss ? 'HIT_STOP'
+        : 'CLOSED_FLAT',
+      exitDate: graded.gradedDate,
+      exitPrice: finalPrice,
+    });
+
     console.log(`[Scorecard] ${pos.ticker} [${pos.strategy || 'n/a'}]: ${outcome} (${stockReturnPct.toFixed(1)}% stock move)`);
   }
 

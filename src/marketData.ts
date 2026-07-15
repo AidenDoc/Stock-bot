@@ -76,6 +76,14 @@ export async function getQuote(ticker: string): Promise<StockQuote | null> {
     const change = price - prevClose;
     const changePercent = (change / prevClose) * 100;
 
+    // 5-day % move from the 5d closes this endpoint already returned
+    // (used as a scan-time feature by the trade memory bank).
+    const closes5d: number[] =
+      result.indicators?.quote?.[0]?.close?.filter((c: any) => c != null) || [];
+    const change5dPct = closes5d.length >= 2 && closes5d[0] > 0
+      ? ((price - closes5d[0]) / closes5d[0]) * 100
+      : null;
+
     return {
       ticker: ticker.toUpperCase(),
       name,
@@ -84,6 +92,7 @@ export async function getQuote(ticker: string): Promise<StockQuote | null> {
       changePercent,
       volume: meta.regularMarketVolume || 0,
       avgVolume,
+      change5dPct,
       marketCap,
       pe,
       week52High,

@@ -4,6 +4,7 @@
 
 import TelegramBot from 'node-telegram-bot-api';
 import { StockPick, WeeklyReport, DailyUpdate, NewsArticle } from './types';
+import { memoryHeadToHead, getMemoryStats, MIN_CLOSED_FOR_RETRIEVAL } from './memory/tradeMemory';
 import fs from 'fs';
 import path from 'path';
 
@@ -116,6 +117,7 @@ export function registerCommands(): void {
       '/dashboard — open your live dashboard',
       '/open — current open picks',
       '/record — win / loss record',
+      '/memory — memory-informed vs baseline picks',
       '/help — this list',
     ].join('\n'));
   });
@@ -177,6 +179,39 @@ export function registerCommands(): void {
       '',
       '<i>Outcomes track the underlying stock vs. target/stop.</i>',
     ].join('\n'));
+  });
+
+  bot.onText(/^\/memory/, async (msg) => {
+    if (String(msg.chat.id) !== ownerId) return;
+    const stats = getMemoryStats();
+    const h2h = memoryHeadToHead();
+
+    if (stats.total === 0) {
+      await reply(msg.chat.id, '🧠 <b>Trade Memory</b>\n\nNo records yet — the bank starts filling on the next weekly scan.');
+      return;
+    }
+
+    const fmtSide = (label: string, s: typeof h2h.memory) => s.n === 0
+      ? `<b>${label}:</b> no closed picks yet`
+      : `<b>${label}:</b> ${s.wins}W / ${s.losses}L (${s.winRate.toFixed(0)}% win rate) over ${s.n} picks, avg ${s.avgPnlPct >= 0 ? '+' : ''}${s.avgPnlPct.toFixed(1)}%`;
+
+    const closedLine = Object.entries(stats.closedByStrategy)
+      .map(([k, v]) => `${k} ${v}`)
+      .join(', ') || 'none';
+
+    const lines = [
+      '🧠 <b>Trade Memory</b>',
+      '',
+      `${stats.total} records (${stats.open} open). Closed by strategy: ${closedLine}.`,
+      `Retrieval turns on at ${MIN_CLOSED_FOR_RETRIEVAL} closed trades per strategy.`,
+      '',
+      fmtSide('Memory-informed', h2h.memory),
+      fmtSide('Baseline (no memory)', h2h.baseline),
+    ];
+    if (h2h.memory.n > 0 && h2h.memory.n < 25) {
+      lines.push('', `<i>Kill criterion check runs at 25 memory-informed closed picks (${h2h.memory.n}/25 so far).</i>`);
+    }
+    await reply(msg.chat.id, lines.join('\n'));
   });
 
   bot.on('polling_error', (err: any) => {
