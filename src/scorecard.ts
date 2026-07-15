@@ -8,9 +8,9 @@
 import fs from 'fs';
 import path from 'path';
 import { PortfolioPosition } from './types';
-import { getQuote, getSplitAdjustment, getCloseOnOrBefore, SplitEvent } from './marketData';
+import { getQuote, getSplitAdjustment, getCloseOnOrBefore, getDailyBars, detectFrozenWindow, SplitEvent } from './marketData';
 import { recordOutcome } from './memory/tradeMemory';
-import { sendGradingReviewAlert } from './telegram';
+import { sendGradingReviewAlert, sendStaleQuoteAlert } from './telegram';
 
 // Picks whose computed return exceeds this magnitude don't get auto-graded —
 // they're flagged for manual review instead (split-adjustment fixes normal
@@ -43,6 +43,10 @@ export interface GradedPick {
   // pickedDate → gradedDate window. Absent on picks graded before this field
   // existed.
   excessReturnPct?: number;
+  // Set (by a manual fix script) on records later found to be corporate-action
+  // artifacts — e.g. the LC → HAPN phantom picks graded off a frozen quote.
+  // Kept as audit history; every stats consumer must exclude these.
+  invalid?: boolean;
 }
 
 interface ScorecardHistory {
@@ -94,6 +98,23 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
 
     const quote = await getQuote(pos.ticker);
     if (!quote) continue;
+
+    // Frozen-price guard (sibling of the ±50% split guard below): a delisted
+    // or renamed symbol (e.g. LC → HAPN) keeps serving its last trade as a
+    // live quote, which would grade as a fake flat week. If the hold window
+    // shows no actual trading — identical closes, zero volume, or fewer than
+    // 2 distinct trading days — flag for manual review instead of grading.
+    const bars = await getDailyBars(pos.ticker, pos.addedDate);
+    const frozenReason = detectFrozenWindow(bars);
+    if (frozenReason) {
+      console.warn(`[Scorecard] ${pos.ticker}: ${frozenReason} — skipping auto-grade, flagged for review`);
+      await sendStaleQuoteAlert(
+        pos.ticker,
+        `Picked ${pos.addedDate.slice(0, 10)} at $${pos.entryPrice.toFixed(2)} — grading skipped.`,
+        frozenReason
+      );
+      continue;  // leave ungraded — retried on the next grading run
+    }
 
     // A split between pickedDate and now silently rescales every later raw
     // quote — bring it back to the scale entry/target/stop were set in
@@ -213,7 +234,9 @@ export function getRecord(): {
   };
 } {
   const history = loadHistory();
-  const graded = history.graded.filter(g => g.outcome !== 'OPEN');
+  // invalid === true = corporate-action artifact kept only as audit history
+  // (e.g. the LC → HAPN phantom picks) — never counted in the record.
+  const graded = history.graded.filter(g => g.outcome !== 'OPEN' && g.invalid !== true);
 
   const overall = tally(graded);
   const opts = graded.filter(g => g.pickType === 'OPTIONS_CALL');
@@ -242,5 +265,5 @@ export function getRecord(): {
 
 export function getRecentGraded(limit: number = 8): GradedPick[] {
   const history = loadHistory();
-  return history.graded.slice(-limit).reverse();
+  return history.graded.filter(g => g.invalid !== true).slice(-limit).reverse();
 }

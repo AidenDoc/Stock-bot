@@ -21,6 +21,12 @@ import { getMemoryContext, recordPick, TradeFeatures, NewsVerdict } from './memo
 
 export type StrategyTag = 'PULLBACK' | 'BREAKOUT';
 
+// A ticker whose newest daily bar is older than this has produced no bar
+// for at least the last 5 trading days (9 calendar days covers weekends +
+// a holiday) — it's delisted or renamed (e.g. LC → HAPN), even though
+// Yahoo still serves its frozen last-trade price as a live-looking quote.
+const MAX_BAR_AGE_MS = 9 * 24 * 60 * 60 * 1000;
+
 export interface MarketRow {
   quote: StockQuote;
   technicals: TechnicalIndicators;
@@ -274,6 +280,16 @@ export async function runWeeklyScan(
   for (const ticker of candidates) {
     const quote = await getQuote(ticker);
     if (!quote || quote.price < 3 || quote.price > 3000) { await sleep(400); continue; }
+
+    // Staleness guard: no bar in the last 5 trading days = dead symbol —
+    // skip it instead of scoring a frozen quote (uses the 5d bars getQuote
+    // already fetched, so this costs no extra request).
+    if (!quote.lastBarDate || Date.now() - new Date(quote.lastBarDate).getTime() > MAX_BAR_AGE_MS) {
+      console.warn(`[Scanner] ⚠️ ${ticker}: no bar data in the last 5 trading days (last bar: ${quote.lastBarDate ?? 'none'}) — skipping stale/dead symbol`);
+      await sleep(400);
+      continue;
+    }
+
     const technicals = await getTechnicals(ticker, quote.price);
     market.push({ quote, technicals });
     await sleep(800); // Yahoo politeness

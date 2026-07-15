@@ -11,6 +11,7 @@ export interface StockQuote {
   volume: number;
   avgVolume: number;
   change5dPct?: number | null;  // 5-day % move (from the 5d closes getQuote already fetches)
+  lastBarDate?: string | null;  // YYYY-MM-DD of the newest real bar — stale/absent means delisted or renamed
   marketCap: number;
   pe: number | null;
   week52High: number;
@@ -132,4 +133,6 @@ export interface PortfolioPosition {
     rationale: string;
   };
   splitAdjustedThrough?: string;   // ISO date — entry/target/stop already rescaled for any splits up to here
+  lastCheckPrice?: number;         // price seen on the previous daily check (frozen-quote detection)
+  stalePriceChecks?: number;       // consecutive daily checks at an identical price (0 = price moved)
 }

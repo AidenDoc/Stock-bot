@@ -161,7 +161,9 @@ export function registerCommands(): void {
   bot.onText(/^\/record/, async (msg) => {
     if (String(msg.chat.id) !== ownerId) return;
     const sc = loadJSON<{ graded: any[] }>(SCORECARD_FILE, { graded: [] });
-    const graded = (sc.graded || []).filter(g => g.outcome !== 'OPEN');
+    // invalid === true marks corporate-action artifacts (e.g. the LC → HAPN
+    // phantom picks) kept as audit history — never counted in the record.
+    const graded = (sc.graded || []).filter(g => g.outcome !== 'OPEN' && g.invalid !== true);
     const wins = graded.filter(g => g.outcome === 'WIN').length;
     const losses = graded.filter(g => g.outcome === 'LOSS').length;
     const total = wins + losses;
@@ -369,6 +371,26 @@ export async function sendStartupMessage(): Promise<void> {
 
 export async function sendErrorAlert(component: string, error: string): Promise<void> {
   await send(`⚠️ <b>Stock Bot Error</b>\n<b>${component}:</b> ${error}`);
+}
+
+// Fired when a symbol's price data looks frozen (identical closes, zero
+// volume, or no new trading days) — the signature of a delisting or ticker
+// change (e.g. LC → HAPN), NOT a quiet market. The pick/position stays
+// ungraded/flagged until a human confirms what happened to the symbol.
+export async function sendStaleQuoteAlert(
+  ticker: string, context: string, details: string
+): Promise<void> {
+  const msg = [
+    `🧊 <b>FROZEN PRICE DATA</b> 🧊`,
+    ``,
+    `possible delisting/ticker change — manual review needed: <b>${ticker}</b>`,
+    context,
+    `Detected: ${details}`,
+    ``,
+    `⛔ <b>ACTION: check whether ${ticker} was delisted or renamed before trusting any grade or P&amp;L on it.</b>`,
+  ].join('\n');
+
+  await send(msg);
 }
 
 export async function sendGradingReviewAlert(

@@ -84,6 +84,16 @@ export async function getQuote(ticker: string): Promise<StockQuote | null> {
       ? ((price - closes5d[0]) / closes5d[0]) * 100
       : null;
 
+    // Most recent trading day that produced an actual bar. A delisted or
+    // renamed symbol (e.g. LC → HAPN) keeps a live-looking meta price while
+    // its bars stop — the scanner uses this to skip dead symbols.
+    const ts5d: number[] = result.timestamp || [];
+    const rawCloses5d: (number | null)[] = result.indicators?.quote?.[0]?.close || [];
+    let lastBarDate: string | null = null;
+    for (let i = 0; i < ts5d.length; i++) {
+      if (rawCloses5d[i] != null) lastBarDate = new Date(ts5d[i] * 1000).toISOString().slice(0, 10);
+    }
+
     return {
       ticker: ticker.toUpperCase(),
       name,
@@ -93,6 +103,7 @@ export async function getQuote(ticker: string): Promise<StockQuote | null> {
       volume: meta.regularMarketVolume || 0,
       avgVolume,
       change5dPct,
+      lastBarDate,
       marketCap,
       pe,
       week52High,
@@ -231,6 +242,74 @@ export async function getSplitAdjustment(ticker: string, sinceDate: string): Pro
     console.error(`[MarketData] getSplitAdjustment error for ${ticker}:`, err?.message);
     return none;
   }
+}
+
+// ── Daily bars over a window (frozen-price / staleness checks) ──
+export interface DailyBar {
+  date: string;    // YYYY-MM-DD
+  close: number;
+  volume: number;
+}
+
+export async function getDailyBars(ticker: string, sinceISO: string): Promise<DailyBar[] | null> {
+  try {
+    const since = new Date(sinceISO);
+    if (isNaN(since.getTime())) return null;
+    const period1 = Math.floor(since.getTime() / 1000);
+    const period2 = Math.floor(Date.now() / 1000) + 86400;
+
+    const res = await axios.get(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}`,
+      { params: { interval: '1d', period1, period2 }, headers: YF_HEADERS, timeout: 10000 }
+    );
+
+    const result = res.data?.chart?.result?.[0];
+    if (!result) return null;
+    const ts: number[] = result.timestamp || [];
+    const quote = result.indicators?.quote?.[0] || {};
+    const closes: (number | null)[] = quote.close || [];
+    const volumes: (number | null)[] = quote.volume || [];
+
+    const bars: DailyBar[] = [];
+    for (let i = 0; i < ts.length; i++) {
+      if (closes[i] == null) continue;
+      bars.push({
+        date: new Date(ts[i] * 1000).toISOString().slice(0, 10),
+        close: closes[i] as number,
+        volume: volumes[i] ?? 0,
+      });
+    }
+    return bars;
+  } catch (err: any) {
+    console.error(`[MarketData] getDailyBars error for ${ticker}:`, err?.message);
+    return null;
+  }
+}
+
+// ── Frozen-window detection ─────────────────────────────────
+// A ticker change (e.g. LC → HAPN on 2026-06-22) leaves the dead symbol
+// serving its frozen last trade: identical closes, zero volume, no new
+// trading days. Splits present as huge fake moves (caught by the ±50%
+// grading guard); ticker changes present as NO move — this catches those.
+// Returns a human-readable reason when the window looks frozen, or null
+// when the bars look like real trading.
+export function detectFrozenWindow(bars: DailyBar[] | null): string | null {
+  if (!bars || bars.length === 0) return 'no daily bars returned for the hold window';
+
+  const distinctDays = new Set(bars.map(b => b.date));
+  if (distinctDays.size < 2) {
+    return `only ${distinctDays.size} distinct trading day(s) returned for the hold window`;
+  }
+
+  const firstClose = bars[0].close;
+  if (bars.every(b => b.close === firstClose)) {
+    return `close frozen at $${firstClose.toFixed(2)} across all ${bars.length} bars of the hold window`;
+  }
+
+  const totalVolume = bars.reduce((s, b) => s + b.volume, 0);
+  if (totalVolume === 0) return 'zero total volume across the hold window';
+
+  return null;
 }
 
 // ── Close price on or before a given date (for benchmark comparisons) ──
@@ -400,7 +479,11 @@ export function getCandidateTickers(): string[] {
     'TWLO', 'OKTA',
 
     // Fintech & financials
-    'COIN', 'HOOD', 'SOFI', 'AFRM', 'UPST', 'LC', 'JPM', 'GS',
+    // LC removed 2026-07: LendingClub changed ticker to HAPN (Happen Bank)
+    // effective 2026-06-22 — the old symbol just serves a frozen quote.
+    // HAPN can be added once it has ~30+ trading days of history, so
+    // RSI(14)/SMA20 are computable from real bars.
+    'COIN', 'HOOD', 'SOFI', 'AFRM', 'UPST', 'JPM', 'GS',
     'BAC', 'V', 'MA', 'PYPL', 'SQ', 'NU',
 
     // Consumer & retail

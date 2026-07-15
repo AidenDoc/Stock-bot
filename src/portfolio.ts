@@ -12,11 +12,18 @@ import { generatePositionUpdate } from './analyst';
 import {
   sendTargetHitAlert,
   sendStopLossAlert,
+  sendStaleQuoteAlert,
   sendDailyUpdate
 } from './telegram';
 
 const DB_FILE = path.join(process.cwd(), 'data', 'portfolio.json');
 const SCORECARD_FILE = path.join(process.cwd(), 'data', 'scorecard.json');
+
+// Consecutive daily checks at an EXACTLY identical price before flagging a
+// possible delisting/ticker change. 2 repeats = 3 identical checks in a row;
+// an intraday quote landing on the same cent that many times is a frozen
+// feed (e.g. LC after the HAPN rename), not a quiet stock.
+const STALE_PRICE_CHECK_THRESHOLD = 2;
 
 // ── Load / Save ────────────────────────────────────────────
 function loadPortfolio(): PortfolioPosition[] {
@@ -235,6 +242,27 @@ export async function runDailyCheck(): Promise<void> {
     const currentPrice = quote.price;
     pos.currentPrice = currentPrice;
     pos.pnlPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
+
+    // Frozen-quote guard: a delisted/renamed symbol serves its last trade
+    // forever, which reads as "no movement" day after day. Track consecutive
+    // identical quotes and alert instead of silently reporting a flat hold.
+    // Deliberately re-alerts on every check while frozen — this condition
+    // needs a human to act, and it clears itself the moment the price moves.
+    if (pos.lastCheckPrice != null && currentPrice === pos.lastCheckPrice) {
+      pos.stalePriceChecks = (pos.stalePriceChecks ?? 0) + 1;
+    } else {
+      pos.stalePriceChecks = 0;
+    }
+    pos.lastCheckPrice = currentPrice;
+    if (pos.stalePriceChecks >= STALE_PRICE_CHECK_THRESHOLD) {
+      const checksSeen = pos.stalePriceChecks + 1;
+      console.warn(`[Portfolio] ${pos.ticker}: price frozen at $${currentPrice.toFixed(2)} across ${checksSeen} consecutive daily checks — possible delisting/ticker change`);
+      await sendStaleQuoteAlert(
+        pos.ticker,
+        `Open position (added ${pos.addedDate.slice(0, 10)}) — the daily check price has stopped moving.`,
+        `quote frozen at $${currentPrice.toFixed(2)} across ${checksSeen} consecutive daily checks`
+      );
+    }
 
     // Check target hit (for ACTIVE positions)
     if (pos.status === 'ACTIVE' && currentPrice >= pos.targetPrice) {

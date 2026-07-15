@@ -20,7 +20,9 @@ function loadGraded(): GradedPick[] {
   try {
     if (!fs.existsSync(HISTORY_FILE)) return [];
     const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf-8'));
-    return (data.graded as GradedPick[]).filter(g => g.outcome !== 'OPEN');
+    // invalid === true = corporate-action artifact kept only as audit history
+    // (e.g. the LC → HAPN phantom picks) — excluded from every stat here.
+    return (data.graded as GradedPick[]).filter(g => g.outcome !== 'OPEN' && g.invalid !== true);
   } catch {
     return [];
   }
