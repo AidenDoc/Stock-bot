@@ -11,14 +11,16 @@ import { StockPick, WeeklyReport } from './types';
 
 const CURRENT_PICKS_FILE = path.join(process.cwd(), 'data', 'current-picks.json');
 
+// The written shape is stock-only as of July 2026. Old files on disk may
+// still contain type 'option_call' entries with an `option` object —
+// readers must tolerate those (they're plain JSON; never validate them away).
 export interface CurrentPickEntry {
   ticker: string;
-  type: 'option_call' | 'swing';
+  type: 'swing';
   strategy: 'PULLBACK' | 'BREAKOUT' | null;
   entryPrice: number;
   target: number;
   stop: number;
-  option: { strike: number; expiry: string; midAtPick: number } | null;
   earningsFlag: boolean;
 }
 
@@ -29,21 +31,13 @@ export interface CurrentPicksFile {
 }
 
 function toEntry(pick: StockPick): CurrentPickEntry {
-  const isOption = pick.pickType === 'OPTIONS_CALL';
   return {
     ticker: pick.ticker,
-    type: isOption ? 'option_call' : 'swing',
+    type: 'swing',
     strategy: pick.strategy ?? null,
     entryPrice: pick.currentPrice,   // same basis the report and tracker use
     target: pick.targetPrice,
     stop: pick.stopLoss,
-    option: isOption && pick.options
-      ? {
-          strike: pick.options.strikePrice,
-          expiry: pick.options.expirationDate,
-          midAtPick: pick.options.premium,
-        }
-      : null,
     earningsFlag: pick.earningsGap?.withinHorizon ?? false,
   };
 }
@@ -53,7 +47,7 @@ export function buildCurrentPicks(report: WeeklyReport): CurrentPicksFile {
   return {
     generatedAt: report.generatedAt,
     scanType: 'weekly',
-    picks: [...report.optionsPicks, ...report.stockPicks].map(toEntry),
+    picks: report.stockPicks.map(toEntry),
   };
 }
 

@@ -197,7 +197,7 @@
 
   .empty { padding: 34px 20px; text-align: center; color: var(--dim); font-size: 12px; }
 
-  /* ── Group labels (Options / Stock split) ───────── */
+  /* ── Group labels (Active picks) ────────────────── */
   .group-label {
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--active);
     padding: 16px 22px 6px; font-weight: 600;
@@ -460,11 +460,10 @@
     $("openCount").textContent = open.length ? "(" + open.length + ")" : "";
     if (!open.length) { $("openWrap").innerHTML = `<div class="empty">No active picks. Run the bot to add picks.</div>`; return; }
 
-    const options = open.filter(p => p.pickType === "OPTIONS_CALL");
-    const stocks  = open.filter(p => p.pickType !== "OPTIONS_CALL");
-    $("openWrap").innerHTML =
-      openGroup("Options calls", options) +
-      openGroup("Stock picks", stocks);
+    // Stock picks are the whole view now (options were retired July 2026).
+    // Legacy open OPTIONS_CALL rows, if any remain, are shown in the same
+    // single list — typeLabel still tags them until they close.
+    $("openWrap").innerHTML = openGroup("Stock picks", open);
   }
 
   function renderCharts() {

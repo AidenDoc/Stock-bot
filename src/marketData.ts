@@ -4,7 +4,7 @@
 // ============================================================
 
 import axios from 'axios';
-import { StockQuote, TechnicalIndicators, OptionsData } from './types';
+import { StockQuote, TechnicalIndicators } from './types';
 import { isBarComplete } from './marketCalendar';
 
 const YF_HEADERS = {
@@ -411,76 +411,6 @@ function macd(closes: number[], fast = 12, slow = 26, signal = 9): { macd: numbe
   };
 }
 
-// ── Option strike selection (nearest increment, ATM-or-just-OTM) ──
-// Nearest $1 increment for stocks <$20, $2.50 for $20-$50, $5 for $50+.
-// Exported so the backtest's options-grading arm picks the SAME strike.
-export function selectStrike(currentPrice: number): number {
-  let strikeIncrement = 5;
-  if (currentPrice < 20) strikeIncrement = 1;
-  else if (currentPrice < 50) strikeIncrement = 2.5;
-  return Math.ceil(currentPrice / strikeIncrement) * strikeIncrement;
-}
-
-// ── IV-by-price-tier model (approximates real momentum-stock IV ranges) ──
-// 80% IV for small speculative names down to 30% for large stable ones.
-// NOTE: this is a price-tier MODEL, not real option-chain IV. Exported so
-// the backtest's options-grading arm uses the SAME assumption.
-export function tieredIV(currentPrice: number): number {
-  if (currentPrice < 10) return 0.80;        // 80% IV for small speculative stocks
-  if (currentPrice < 20) return 0.65;        // 65% IV
-  if (currentPrice < 50) return 0.50;        // 50% IV
-  if (currentPrice < 150) return 0.40;       // 40% IV
-  return 0.30;                               // 30% IV for large stable stocks
-}
-
-// ── Options estimate ───────────────────────────────────────
-export function estimateOptionsData(
-  ticker: string, currentPrice: number, targetPrice: number, weeksOut: number = 4
-): OptionsData {
-  const strikePrice = selectStrike(currentPrice);
-
-  const expDate = getNextFriday(weeksOut);
-
-  // Realistic premium estimate based on price tier (approximates real IV ranges)
-  // Low-priced stocks ($3-15): ~$0.15-0.50 typical ATM premium
-  // Mid-priced ($15-50): ~$0.50-2.00
-  // Higher ($50-200): ~$1.50-5.00
-  // Based on ~30-50% IV for typical momentum stocks, simplified Black-Scholes approx
-  const ivEstimate = tieredIV(currentPrice);
-
-  // Simplified ATM call premium: S * IV * sqrt(T/365) * 0.4
-  // where T = days to expiration, 0.4 ≈ N(d1) for ATM option
-  const daysToExp = weeksOut * 7;
-  const rawPremium = currentPrice * ivEstimate * Math.sqrt(daysToExp / 365) * 0.4;
-
-  // Round to nearest $0.05 (options tick size)
-  const premium = Math.max(0.05, Math.round(rawPremium / 0.05) * 0.05);
-  const contractCost = Math.round(premium * 100);
-  const breakeven = parseFloat((strikePrice + premium).toFixed(2));
-  const upside = ((targetPrice - breakeven) / breakeven * 100).toFixed(1);
-
-  return {
-    ticker, expirationDate: expDate, strikePrice, optionType: 'CALL',
-    premium, breakeven,
-    maxGain: `~${upside}% if ${ticker} hits $${targetPrice}`,
-    maxLoss: `$${contractCost} per contract (100% of premium)`,
-    impliedVolatility: ivEstimate,
-    delta: null,
-    volume: null,
-    openInterest: null,
-    liquidityNote: '⚠️ Estimated contract — no live volume/OI data; verify liquidity in Robinhood',
-    rationale: `Buy-to-open ${ticker} $${strikePrice}C expiring ${expDate}. Cost ~$${contractCost}/contract. Breakeven at $${breakeven}.`,
-  };
-}
-
-function getNextFriday(weeksOut: number): string {
-  const date = new Date();
-  const day = date.getDay();
-  const daysToFriday = (5 - day + 7) % 7 || 7;
-  date.setDate(date.getDate() + daysToFriday + (weeksOut - 1) * 7);
-  return date.toISOString().split('T')[0];
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
@@ -536,7 +466,7 @@ export function getCandidateTickers(): string[] {
     // Industrials & materials
     'CAT', 'DE', 'BA', 'GE', 'FCX', 'CLF',
 
-    // Broad ETFs (liquid options, trend/context)
+    // Broad ETFs (liquid, trend/context)
     'SPY', 'QQQ', 'IWM', 'DIA', 'SMH', 'ARKK', 'XLF', 'XLE',
   ];
 }

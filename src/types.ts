@@ -42,27 +42,13 @@ export interface TechnicalIndicators {
   trend: 'bullish' | 'bearish' | 'neutral';
 }
 
-export interface OptionsData {
-  ticker: string;
-  expirationDate: string;      // e.g. "2025-06-20"
-  strikePrice: number;
-  optionType: 'CALL' | 'PUT';
-  premium: number;             // estimated cost per contract / 100
-  breakeven: number;
-  maxGain: string;             // e.g. "unlimited" or "X%"
-  maxLoss: string;             // e.g. "$350 per contract"
-  impliedVolatility: number | null;
-  delta: number | null;
-  volume: number | null;          // contracts traded today (liquidity)
-  openInterest: number | null;    // open contracts (liquidity)
-  liquidityNote: string;          // human-readable liquidity warning
-  rationale: string;
-}
-
 export interface StockPick {
   ticker: string;
   name: string;
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG';
+  // New picks are stock-only. Historical records (portfolio.json,
+  // scorecard.json) keep 'OPTIONS_CALL' forever — see PortfolioPosition
+  // and GradedPick, which stay legacy-tolerant.
+  pickType: 'STOCK_LONG';
   currentPrice: number;
   entryZone: { low: number; high: number };
   targetPrice: number;
@@ -75,7 +61,6 @@ export interface StockPick {
   summary: string;
   technicals: TechnicalIndicators;
   news: NewsArticle[];
-  options?: OptionsData;       // only for OPTIONS_CALL picks
   sector: string;
   addedAt: string;             // ISO timestamp
   voteBreakdown?: string;      // e.g. "✅ CLAUDE (82) | ❌ GROQ (45)"
@@ -94,7 +79,6 @@ export interface StockPick {
 
 export interface WeeklyReport {
   weekOf: string;              // e.g. "May 26, 2025"
-  optionsPicks: StockPick[];   // always 3
   stockPicks: StockPick[];     // 3-5 regular stocks
   marketOutlook: string;
   keyEventsThisWeek: string[];
@@ -116,6 +100,9 @@ export interface DailyUpdate {
 
 export interface PortfolioPosition {
   ticker: string;
+  // 'OPTIONS_CALL' survives only on historical rows in portfolio.json —
+  // the bot stopped generating options picks in July 2026. Never narrow
+  // this union or old records stop parsing.
   pickType: 'OPTIONS_CALL' | 'STOCK_LONG';
   entryPrice: number;
   currentPrice: number;

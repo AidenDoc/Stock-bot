@@ -18,9 +18,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import axios from 'axios';
-import { StockQuote, TechnicalIndicators, NewsArticle, StockPick, OptionsData } from './types';
-import { estimateOptionsData } from './marketData';
-import { getRealOptionsData } from './optionsData';
+import { StockQuote, TechnicalIndicators, NewsArticle, StockPick } from './types';
 
 // ── Model weights (Claude + GPT weighted higher) ───────────
 const MODEL_WEIGHTS: Record<string, number> = {
@@ -195,7 +193,6 @@ function buildPrompt(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
   modelRole: string,
   memoryBlock?: string
 ): string {
@@ -203,11 +200,7 @@ function buildPrompt(
     `[${n.sentiment.toUpperCase()}] ${n.source}: ${n.title}`
   ).join('\n');
 
-  const tradeType = pickType === 'OPTIONS_CALL'
-    ? 'SHORT-TERM OPTIONS CALL TRADE (1-2 week expiry only — tight timeframe)'
-    : 'SWING TRADE (1-4 week hold)';
-
-  return `You are ${modelRole}. Analyze this stock for a ${tradeType}.
+  return `You are ${modelRole}. Analyze this stock for a SWING TRADE (1-4 week hold).
 
 STOCK DATA:
 Ticker: ${quote.ticker} (${quote.name})
@@ -236,7 +229,7 @@ Respond ONLY with a JSON object (no markdown, no preamble):
   "entryHigh": number,
   "targetPrice": number,
   "stopLoss": number,
-  "timeHorizon": "string — for OPTIONS use '1 week' or '2 weeks' only",
+  "timeHorizon": "string, e.g. '1-2 weeks'",
   "catalysts": ["array", "of", "strings"],
   "risks": ["array", "of", "strings"],
   "summary": "2-3 sentence plain English summary of the trade thesis. Include WHY now.",
@@ -245,8 +238,7 @@ Respond ONLY with a JSON object (no markdown, no preamble):
 
 Rules:
 - Only set shouldPick=true if confidence >= 65
-- For OPTIONS_CALL: target must be 8-25% above current price. riskRewardRatio must be >= 2.5
-- For STOCK_LONG: target 5-15% above, stop 3-7% below. riskRewardRatio must be >= 2.0
+- Target 5-15% above current price, stop 3-7% below. riskRewardRatio must be >= 2.0
 - Be realistic. If chart looks weak or news is negative, say shouldPick=false`;
 }
 
@@ -284,11 +276,10 @@ async function askClaude(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
   memoryBlock?: string
 ): Promise<ModelVote> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
-  const prompt = buildPrompt(quote, technicals, news, pickType,
+  const prompt = buildPrompt(quote, technicals, news,
     'an expert stock trader specializing in fundamental analysis and market sentiment', memoryBlock);
 
   try {
@@ -310,11 +301,10 @@ async function askGPT4o(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
   memoryBlock?: string
 ): Promise<ModelVote> {
-  const prompt = buildPrompt(quote, technicals, news, pickType,
-    'an expert technical analyst and options trader focused on chart patterns and momentum', memoryBlock);
+  const prompt = buildPrompt(quote, technicals, news,
+    'an expert technical analyst focused on chart patterns and momentum', memoryBlock);
 
   try {
     const response = await callModel('gpt4o', () => axios.post(
@@ -340,10 +330,9 @@ async function askGemini(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
   memoryBlock?: string
 ): Promise<ModelVote> {
-  const prompt = buildPrompt(quote, technicals, news, pickType,
+  const prompt = buildPrompt(quote, technicals, news,
     'an expert analyst specializing in news-driven catalysts, sector rotation, and macro trends', memoryBlock);
 
   try {
@@ -367,10 +356,9 @@ async function askGroq(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
   memoryBlock?: string
 ): Promise<ModelVote> {
-  const prompt = buildPrompt(quote, technicals, news, pickType,
+  const prompt = buildPrompt(quote, technicals, news,
     'a risk-focused trader who weighs both upside and downside fairly. Approve solid setups but flag genuine red flags', memoryBlock);
 
   try {
@@ -493,7 +481,6 @@ export async function analyzeStock(
   quote: StockQuote,
   technicals: TechnicalIndicators,
   news: NewsArticle[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
   memoryBlock?: string
 ): Promise<StockPick | null> {
 
@@ -506,10 +493,10 @@ export async function analyzeStock(
   // memoryBlock (similar past graded trades, when available) goes to
   // all four models identically — same shared prompt, one extra section.
   const [claudeVote, gpt4oVote, geminiVote, groqVote] = await Promise.all([
-    askClaude(quote, technicals, news, pickType, memoryBlock),
-    askGPT4o(quote, technicals, news, pickType, memoryBlock),
-    askGemini(quote, technicals, news, pickType, memoryBlock),
-    askGroq(quote, technicals, news, pickType, memoryBlock),
+    askClaude(quote, technicals, news, memoryBlock),
+    askGPT4o(quote, technicals, news, memoryBlock),
+    askGemini(quote, technicals, news, memoryBlock),
+    askGroq(quote, technicals, news, memoryBlock),
   ]);
 
   const votes = [claudeVote, gpt4oVote, geminiVote, groqVote];
@@ -521,27 +508,10 @@ export async function analyzeStock(
 
   if (!result.shouldPick || result.confidenceScore < 65) return null;
 
-  let options: OptionsData | undefined;
-  if (pickType === 'OPTIONS_CALL') {
-    // Try REAL Alpaca options pricing first
-    const expDate = getNextFridayDate(2);
-    const realOptions = (process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY)
-      ? await getRealOptionsData(quote.ticker, quote.price, result.targetPrice, expDate)
-      : null;
-
-    if (realOptions) {
-      options = realOptions;
-      console.log(`[Analyst] ${quote.ticker} using REAL Alpaca options data`);
-    } else {
-      options = estimateOptionsData(quote.ticker, quote.price, result.targetPrice, 2);
-      console.log(`[Analyst] ${quote.ticker} using ESTIMATED options data (Alpaca unavailable)`);
-    }
-  }
-
   const pick: StockPick = {
     ticker: quote.ticker,
     name: quote.name,
-    pickType,
+    pickType: 'STOCK_LONG',
     currentPrice: quote.price,
     entryZone: { low: result.entryLow, high: result.entryHigh },
     targetPrice: result.targetPrice,
@@ -554,7 +524,6 @@ export async function analyzeStock(
     summary: result.summary,
     technicals,
     news: news.slice(0, 3),
-    options,
     sector: quote.sector,
     addedAt: new Date().toISOString(),
     voteBreakdown: result.voteBreakdown,
@@ -641,13 +610,4 @@ Respond with JSON only:
   } catch {
     return { action: 'HOLD', update: 'No update available — hold position per original plan.' };
   }
-}
-
-// Helper: next Friday N weeks out, YYYY-MM-DD
-function getNextFridayDate(weeksOut: number): string {
-  const date = new Date();
-  const day = date.getDay();
-  const daysToFriday = (5 - day + 7) % 7 || 7;
-  date.setDate(date.getDate() + daysToFriday + (weeksOut - 1) * 7);
-  return date.toISOString().split('T')[0];
 }

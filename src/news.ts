@@ -423,8 +423,8 @@ export async function getNextEarningsDate(ticker: string): Promise<string | null
 
 // Translate a timeHorizon string ("1 week", "1-2 weeks", "3-5 days")
 // into a day count. Falls back to 28 days when unparseable.
-function parseHorizonDays(timeHorizon: string, pickType: 'OPTIONS_CALL' | 'STOCK_LONG'): number {
-  const fallback = pickType === 'OPTIONS_CALL' ? 28 : 28; // ~swing window default
+function parseHorizonDays(timeHorizon: string): number {
+  const fallback = 28; // ~swing window default
   if (!timeHorizon) return fallback;
 
   const nums = (timeHorizon.match(/\d+/g) || []).map(Number);
@@ -443,8 +443,7 @@ function parseHorizonDays(timeHorizon: string, pickType: 'OPTIONS_CALL' | 'STOCK
 // there is no usable upcoming date.
 export function computeEarningsGap(
   earningsDate: string | null,
-  timeHorizon: string,
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG'
+  timeHorizon: string
 ): { date: string; daysUntil: number; withinHorizon: boolean } | null {
   if (!earningsDate) return null;
 
@@ -456,7 +455,7 @@ export function computeEarningsGap(
   const daysUntil = Math.round((ed.getTime() - today.getTime()) / 86400000);
   if (daysUntil < 0) return null;
 
-  const horizonDays = parseHorizonDays(timeHorizon, pickType);
+  const horizonDays = parseHorizonDays(timeHorizon);
   return { date: earningsDate, daysUntil, withinHorizon: daysUntil <= horizonDays };
 }
 

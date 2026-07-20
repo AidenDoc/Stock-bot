@@ -7,7 +7,7 @@
 import 'dotenv/config';
 import cron from 'node-cron';
 import { initTelegram, sendStartupMessage, sendErrorAlert, registerCommands,
-         sendWeeklyOptionsReport, sendWeeklyStockReport } from './telegram';
+         sendWeeklyStockReport } from './telegram';
 import { runWeeklyScan } from './scanner';
 import { runDailyCheck, addPosition, reconcilePortfolio } from './portfolio';
 import { gradePicks, getRecord, getRecentGraded } from './scorecard';
@@ -47,13 +47,13 @@ async function runWeeklyPipeline(): Promise<void> {
   try {
     // Step 1: Scan & analyze markets
     console.log('[Bot] Step 1/4: Scanning markets...');
-    const { optionsPicks, stockPicks } = await runWeeklyScan(3, 4);
+    const { stockPicks } = await runWeeklyScan(4);
 
     // Ticker loop is done — print the per-model ensemble summary
     // (which models actually voted, error rates) and reset counters.
     logRunSummary();
 
-    if (optionsPicks.length === 0 && stockPicks.length === 0) {
+    if (stockPicks.length === 0) {
       await sendErrorAlert('Scanner', 'No picks found this week — market conditions may be poor');
       console.log('[Bot] No picks found this week');
       return;
@@ -66,8 +66,7 @@ async function runWeeklyPipeline(): Promise<void> {
 
     // Step 3: Generate market outlook
     console.log('[Bot] Step 3/4: Generating market outlook...');
-    const allPicks = [...optionsPicks, ...stockPicks];
-    const marketOutlook = await generateMarketOutlook(marketNews, allPicks);
+    const marketOutlook = await generateMarketOutlook(marketNews, stockPicks);
 
     // Step 4: Build weekly report
     const weekOf = new Date().toLocaleDateString('en-US', {
@@ -76,7 +75,6 @@ async function runWeeklyPipeline(): Promise<void> {
 
     const report: WeeklyReport = {
       weekOf,
-      optionsPicks,
       stockPicks,
       marketOutlook,
       keyEventsThisWeek: keyEvents,
@@ -85,8 +83,6 @@ async function runWeeklyPipeline(): Promise<void> {
 
     // Step 5: Send Telegram notifications
     console.log('[Bot] Step 4/4: Sending Telegram notifications...');
-    await sendWeeklyOptionsReport(report);
-    await sleep(2000);
     await sendWeeklyStockReport(report);
 
     // Snapshot the finalized week's picks (same values as the report
@@ -94,7 +90,7 @@ async function runWeeklyPipeline(): Promise<void> {
     writeCurrentPicks(report);
 
     // Step 6: Add all picks to portfolio tracker (as WATCHING)
-    for (const pick of allPicks) {
+    for (const pick of stockPicks) {
       addPosition(pick);
     }
 
@@ -107,7 +103,7 @@ async function runWeeklyPipeline(): Promise<void> {
     await updateChartData();
 
     console.log('[Bot] ✅ Weekly pipeline complete!');
-    console.log(`[Bot] Options picks: ${optionsPicks.length}, Stock picks: ${stockPicks.length}`);
+    console.log(`[Bot] Stock picks: ${stockPicks.length}`);
 
   } catch (err: any) {
     console.error('[Bot] Weekly pipeline error:', err?.message);
@@ -249,10 +245,6 @@ async function main() {
     console.log('[Bot] SIGINT received, shutting down');
     process.exit(0);
   });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 main().catch(err => {

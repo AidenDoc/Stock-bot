@@ -23,8 +23,7 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { StockQuote } from './types';
-import { computeTechnicals, getCandidateTickers, getQuote, selectStrike, tieredIV } from './marketData';
-import { blackScholes } from 'black-scholes';
+import { computeTechnicals, getCandidateTickers, getQuote } from './marketData';
 import { scoreBreakout, scorePullback, ScoredCandidate, MarketRow } from './scanner';
 import { GradedPick } from './scorecard';
 import { runEvaluation } from './evaluation';
@@ -399,79 +398,12 @@ export function gradeForward(
 
 function r2(x: number): number { return parseFloat(x.toFixed(2)); }
 
-// ════════════════════════════════════════════════════════════
-// OPTIONS-P&L GRADING ARM  (sits beside the stock-drift grade)
-// ------------------------------------------------------------
-// Grades each long signal as the CALL the live bot would actually buy,
-// instead of on raw stock drift. Strike + IV come from the SAME model the
-// live quote uses (selectStrike / tieredIV in marketData.ts); pricing is
-// Black-Scholes throughout, so all three option-specific forces are modeled:
-//
-//   • Theta — the contract is repriced with the days-to-expiry remaining at
-//     the actual exit (calendar days elapsed over the hold), so value decays.
-//   • Delta — BS captures delta×(stock move), not the full move.
-//   • IV    — the modeled IV reprices the contract as the underlying moves
-//     toward/through the strike.
-//
-// THE KEY CORRECTION: the exit point is the SAME one the stock grade produced
-// (g.finalPrice = underlying at exit, g.exitDate = exit date). When the −1.5×ATR
-// stop is hit, the contract exits at its residual BS value at that price/date —
-// NOT a flat −100%. The flat-wipeout assumption understates a stop-managed book.
-// Entry premium is the BS value at entry (tiered IV), so entry and exit share
-// one pricing model — no spurious day-0 mark.
-// ════════════════════════════════════════════════════════════
-const RISK_FREE_RATE = 0.04;   // flat short rate for BS; ~negligible over a 4-week hold
-const OPTION_DAYS = 28;        // ~4 weeks to expiry — matches estimateOptionsData & ≈ HORIZON
-// Floor below which a contract is treated as untradeable and dropped from the
-// options arm. A BS entry premium of a few cents (e.g. far-OTM calls on sub-$10,
-// 80%-IV names) cannot be filled at model value on a real chain — the bid/ask
-// makes any % return fiction. Dropping these (vs flooring at −100%) keeps the
-// arm honest without manufacturing fake LOSSes; the stock-drift grade is untouched.
-const MIN_TRADEABLE_PREMIUM = 0.10;
-
-// BS call value; at/after expiry (daysToExpiry ≤ 0) only intrinsic remains.
-function bsCallValue(S: number, K: number, daysToExpiry: number, iv: number): number {
-  if (daysToExpiry <= 0) return Math.max(S - K, 0);
-  return blackScholes(S, K, daysToExpiry / 365, iv, RISK_FREE_RATE, 'call');
-}
-
-function calendarDaysBetween(d1: string, d2: string): number {
-  return Math.round((Date.parse(d2) - Date.parse(d1)) / 86_400_000);
-}
-
-export interface OptionGrade {
-  entryPremium: number;
-  exitValue: number;
-  optReturnPct: number;
-  optOutcome: 'WIN' | 'LOSS';
-}
-
-// Reprice the call on the exact exit the stock grade resolved to. No re-walk:
-// g.finalPrice is the underlying at exit in every branch (target, stop, same-bar
-// → stop, or horizon close), and g.exitDate is the exit date — so the option
-// exits at the same level, same day, with theta over the days actually held.
-export function gradeOption(entryDate: string, entryStock: number, g: GradeResult): OptionGrade | null {
-  const strike = selectStrike(entryStock);
-  const iv = tieredIV(entryStock);
-  const entryPremium = bsCallValue(entryStock, strike, OPTION_DAYS, iv);
-  // Untradeable cents-premium contract → drop from the options arm entirely.
-  if (entryPremium < MIN_TRADEABLE_PREMIUM) return null;
-  const daysLeft = OPTION_DAYS - calendarDaysBetween(entryDate, g.exitDate);
-  const exitValue = bsCallValue(g.finalPrice, strike, daysLeft, iv);
-  const optReturnPct = entryPremium > 0 ? ((exitValue - entryPremium) / entryPremium) * 100 : 0;
-  return { entryPremium, exitValue, optReturnPct, optOutcome: optReturnPct >= 0 ? 'WIN' : 'LOSS' };
-}
-
 // One graded record from a candidate + its forward grade.
 // Shared by the Phase 1 mechanical run and the Phase 2 agent run so
-// both produce byte-identical GradedPick shapes. The stock-drift grade is
-// untouched; the options arm is attached alongside it.
+// both produce byte-identical GradedPick shapes.
 function buildGraded(
   cand: ScoredCandidate, date: string, entry: number, target: number, stop: number, g: GradeResult,
 ): GradedPick {
-  // opt is null when the contract is below the tradeable-premium floor; in that
-  // case the options fields stay unset and summarizeOptions skips the pick.
-  const opt = gradeOption(date, entry, g);
   return {
     ticker: cand.quote.ticker,
     pickType: 'STOCK_LONG',
@@ -485,8 +417,6 @@ function buildGraded(
     outcome: g.outcome,
     stockReturnPct: r2(g.stockReturnPct),
     note: g.exitReason,
-    optReturnPct: opt ? r2(opt.optReturnPct) : undefined,
-    optOutcome: opt ? opt.optOutcome : undefined,
   };
 }
 
@@ -561,39 +491,6 @@ function summarize(picks: GradedPick[]) {
     expectancy: avg, avgWin, avgLoss,
     streak: maxLosingStreakByDate(picks),
     ambiguous: picks.filter(p => p.note.startsWith('same-bar')).length,
-  };
-}
-
-// Worst losing streak by the OPTIONS outcome (a stop-managed call can lose
-// even when the stock drifted up, via theta — so its streak differs).
-function maxOptLosingStreakByDate(picks: GradedPick[]): number {
-  const sorted = [...picks].sort((a, b) => a.pickedDate.localeCompare(b.pickedDate));
-  let max = 0, cur = 0;
-  for (const p of sorted) {
-    if (p.optOutcome === 'LOSS') { cur++; max = Math.max(max, cur); }
-    else cur = 0;
-  }
-  return max;
-}
-
-// Same shape as summarize(), but over the Black-Scholes contract P&L. Returns
-// `ambiguous: 0` (the field is meaningless for the options arm) so it can reuse
-// printSummary unchanged.
-function summarizeOptions(picks: GradedPick[]) {
-  const v = picks.filter(p => p.optReturnPct != null);
-  const n = v.length;
-  const wins = v.filter(p => p.optOutcome === 'WIN');
-  const losses = v.filter(p => p.optOutcome === 'LOSS');
-  const ret = (p: GradedPick) => p.optReturnPct as number;
-  const avg = n ? v.reduce((s, p) => s + ret(p), 0) / n : 0;
-  const avgWin = wins.length ? wins.reduce((s, p) => s + ret(p), 0) / wins.length : 0;
-  const avgLoss = losses.length ? losses.reduce((s, p) => s + ret(p), 0) / losses.length : 0;
-  return {
-    n, wins: wins.length, losses: losses.length,
-    winRate: n ? (wins.length / n) * 100 : 0,
-    expectancy: avg, avgWin, avgLoss,
-    streak: maxOptLosingStreakByDate(v),
-    ambiguous: 0,
   };
 }
 
@@ -746,28 +643,6 @@ function printSummary(label: string, s: ReturnType<typeof summarize>): void {
     `ambig ${s.ambiguous}`);
 }
 
-// Per strategy, print two rows: the existing swing/stock-drift grade and the
-// new Black-Scholes options-contract grade — same matched picks, same format.
-function printStrategyPair(label: string, picks: GradedPick[]): void {
-  printSummary(`${label} swing`, summarize(picks));
-  printSummary(`${label} opts`, summarizeOptions(picks));
-}
-
-// Loud, unburied caveats for the options arm (printed in every report).
-function printOptionsCaveat(): void {
-  console.log('  ⚠️  OPTIONS ARM CAVEATS — read before trusting the opts rows:');
-  console.log('     • "swing" = stock-drift P&L (unchanged). "opts" = Black-Scholes contract P&L.');
-  console.log('     • IV is the price-tier MODEL, not real option-chain IV. Theta and IV-crush');
-  console.log('       both ride on this estimate → the opts number is DIRECTIONALLY informative,');
-  console.log('       not precise. (Strike/IV from estimateOptionsData; BS r=4%, ~4wk expiry.)');
-  console.log('     • Stops exit at the contract\'s residual BS value at the −1.5×ATR level — NOT');
-  console.log('       −100%. It assumes you can exit AT the stop; on wide-spread / illiquid');
-  console.log('       contracts that is optimistic, so the opts result is a MILD UPPER BOUND.');
-  console.log(`     • Contracts with a BS entry premium < $${MIN_TRADEABLE_PREMIUM.toFixed(2)} are DROPPED from the opts arm`);
-  console.log('       (untradeable cents-premium fills are fiction); the swing grade keeps them,');
-  console.log('       so the opts N is < the swing N by exactly those dropped picks.');
-}
-
 async function main() {
   const { mode, limit, phase2, threshold, dates } = parseArgs(process.argv.slice(2));
   const universe = getCandidateTickers().slice(0, Number.isFinite(limit) ? limit : undefined);
@@ -822,24 +697,19 @@ async function main() {
     console.log(`  Selection: kept ${p2.kept} / ${p2.considered} candidates ` +
       `(${p2.considered ? ((p2.kept / p2.considered) * 100).toFixed(0) : 0}%)`);
     console.log(`  Phase 1 full-window baseline: PULLBACK +0.6% / BREAKOUT +0.9% expectancy\n`);
-    printOptionsCaveat();
-    console.log('\n  MECHANICAL (all candidates, same sampled dates) — the control:');
-    printStrategyPair('PULLBACK', mPull);
-    printStrategyPair('BREAKOUT', mBrk);
+    console.log('  MECHANICAL (all candidates, same sampled dates) — the control:');
+    printSummary('PULLBACK', summarize(mPull));
+    printSummary('BREAKOUT', summarize(mBrk));
     console.log('\n  AGENT-FILTERED (combined verdict cleared threshold) — the test:');
-    printStrategyPair('PULLBACK', fPull);
-    printStrategyPair('BREAKOUT', fBrk);
+    printSummary('PULLBACK', summarize(fPull));
+    printSummary('BREAKOUT', summarize(fBrk));
     console.log('═'.repeat(64));
 
-    // Verdict lines: did the asymmetry clear the mechanical floor? (both arms)
+    // Verdict lines: did the asymmetry clear the mechanical floor?
     const dPullSwing = summarize(fPull).expectancy - summarize(mPull).expectancy;
     const dBrkSwing = summarize(fBrk).expectancy - summarize(mBrk).expectancy;
-    const dPullOpts = summarizeOptions(fPull).expectancy - summarizeOptions(mPull).expectancy;
-    const dBrkOpts = summarizeOptions(fBrk).expectancy - summarizeOptions(mBrk).expectancy;
     console.log(`  Δ swing expectancy vs same-date mechanical:  ` +
       `PULLBACK ${fmtPct(dPullSwing)}  |  BREAKOUT ${fmtPct(dBrkSwing)}`);
-    console.log(`  Δ opts  expectancy vs same-date mechanical:  ` +
-      `PULLBACK ${fmtPct(dPullOpts)}  |  BREAKOUT ${fmtPct(dBrkOpts)}`);
     console.log('═'.repeat(64));
 
     if (fPull.length) await runEvaluation(fPull, `PHASE2 PULLBACK / agent-filtered`);
@@ -858,11 +728,9 @@ async function main() {
   console.log('─'.repeat(64));
   console.log(`  Scan dates: ${run.scanDates}  |  Total graded picks: ${run.graded.length}`);
   console.log(`  Ambiguous same-bar target+stop hits: ${run.ambiguousCount} (graded LOSS, pessimistic)\n`);
-  printOptionsCaveat();
-  console.log('');
-  printStrategyPair('PULLBACK', pullback);
-  printStrategyPair('BREAKOUT', breakout);
-  printStrategyPair('BLENDED', run.graded);
+  printSummary('PULLBACK', summarize(pullback));
+  printSummary('BREAKOUT', summarize(breakout));
+  printSummary('BLENDED', summarize(run.graded));
   console.log('═'.repeat(64));
 
   // ── Full honest-eval report per strategy (existing harness) ──

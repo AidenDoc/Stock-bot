@@ -20,7 +20,7 @@ const LEGACY = 'https://financialmodelingprep.com/api/v3';
 interface Mover { symbol: string; price?: number; changesPercentage?: number; }
 
 // Junk filters so the screener doesn't drag in untradeable names.
-const MIN_PRICE = 5;        // below this, options spreads are garbage
+const MIN_PRICE = 5;        // below this, spreads/liquidity are garbage
 const MAX_PRICE = 2000;
 const MAX_DAY_GAIN = 6;     // skip already-spiked names (the 0-for-14 trap)
 const MAX_PER_LIST = 25;    // take the top N from each FMP list

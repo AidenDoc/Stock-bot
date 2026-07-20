@@ -238,33 +238,17 @@ export function registerCommands(): void {
   console.log('[Telegram] Command handlers registered (polling on)');
 }
 
-export async function sendWeeklyOptionsReport(report: WeeklyReport): Promise<void> {
+export async function sendWeeklyStockReport(report: WeeklyReport): Promise<void> {
   const header = [
-    `📅 <b>WEEKLY OPTIONS PICKS — ${report.weekOf}</b>`,
+    `📊 <b>WEEKLY STOCK PICKS — ${report.weekOf}</b>`,
     `━━━━━━━━━━━━━━━━━━━━━━━━`,
+    `Swing trades for Robinhood 📱`,
     ``,
     `🌍 <b>Market Outlook:</b>`,
     report.marketOutlook,
     ``,
     `📌 <b>Key Events This Week:</b>`,
     report.keyEventsThisWeek.map(e => `• ${e}`).join('\n'),
-  ].join('\n');
-
-  await send(header);
-  await sleep(1000);
-
-  for (let i = 0; i < report.optionsPicks.length; i++) {
-    const pick = report.optionsPicks[i];
-    await send(formatOptionsPick(pick, i + 1));
-    await sleep(1500);
-  }
-}
-
-export async function sendWeeklyStockReport(report: WeeklyReport): Promise<void> {
-  const header = [
-    `📊 <b>WEEKLY STOCK PICKS — ${report.weekOf}</b>`,
-    `━━━━━━━━━━━━━━━━━━━━━━━━`,
-    `Regular swing trades for Robinhood 📱`,
   ].join('\n');
 
   await send(header);
@@ -334,9 +318,8 @@ export async function sendStopLossAlert(ticker: string, price: number, stopPrice
 }
 
 export async function sendTradeSignal(pick: StockPick): Promise<void> {
-  const typeEmoji = pick.pickType === 'OPTIONS_CALL' ? '📞' : '📈';
   const msg = [
-    `${typeEmoji} <b>TRADE SIGNAL: ${pick.ticker}</b>`,
+    `📈 <b>TRADE SIGNAL: ${pick.ticker}</b>`,
     ``,
     pick.summary,
     ``,
@@ -428,7 +411,11 @@ export async function sendScorecard(
     ``,
     `<b>Overall Record:</b> ${record.wins}W / ${record.losses}L (${record.winRate.toFixed(0)}% win rate)`,
     `<b>Avg stock move:</b> ${record.avgStockReturn >= 0 ? '+' : ''}${record.avgStockReturn}%`,
-    `<b>Options:</b> ${record.optionsRecord.wins}W / ${record.optionsRecord.losses}L`,
+    // Options picks were retired in July 2026 — the line only appears while
+    // historical options grades exist in the record (they count forever).
+    ...(record.optionsRecord.wins + record.optionsRecord.losses > 0
+      ? [`<b>Options (historical):</b> ${record.optionsRecord.wins}W / ${record.optionsRecord.losses}L`]
+      : []),
     `<b>Stocks:</b> ${record.stockRecord.wins}W / ${record.stockRecord.losses}L`,
     ``,
     `<b>Recently graded:</b>`,
@@ -441,7 +428,7 @@ export async function sendScorecard(
   }
 
   lines.push('');
-  lines.push('<i>Note: outcomes track the underlying stock move. Options P&L is more leveraged than the stock %.</i>');
+  lines.push('<i>Note: outcomes track the underlying stock move vs. target/stop.</i>');
 
   await send(lines.join('\n'));
 }
@@ -469,47 +456,6 @@ function formatNewsView(pick: StockPick): string {
     : '';
   const rationale = nv.rationale ? ` — ${escapeHTML(nv.rationale)}` : '';
   return `📰 <b>News view:</b> ${icon} ${nv.direction.toUpperCase()} (${nv.confidence}/100)${tag}${rationale}`;
-}
-
-function formatOptionsPick(pick: StockPick, index: number): string {
-  const opt = pick.options!;
-  const sentimentBar = getSentimentBar(pick.news);
-  const techEmoji = pick.technicals.trend === 'bullish' ? '🟢' : pick.technicals.trend === 'bearish' ? '🔴' : '🟡';
-
-  const liveData = opt.delta !== null;
-  return [
-    `📞 <b>OPTIONS PICK #${index}: ${pick.ticker} CALL</b>`,
-    `<b>${pick.name}</b> | ${pick.sector}`,
-    `━━━━━━━━━━━━━━━━━━━━━━━━`,
-    ``,
-    `💡 ${escapeHTML(pick.summary)}`,
-    pick.voteBreakdown ? `🤖 <b>AI Votes:</b> ${pick.voteBreakdown}` : '',
-    ``,
-    `📍 <b>Stock now:</b> $${pick.currentPrice.toFixed(2)}`,
-    `📄 <b>Contract:</b> $${opt.strikePrice} CALL exp ${opt.expirationDate} (${(((opt.strikePrice - pick.currentPrice) / pick.currentPrice) * 100).toFixed(1)}% OTM)`,
-    `💵 <b>Premium:</b> ~$${opt.premium.toFixed(2)} (~$${Math.round(opt.premium * 100)}/contract)`,
-    liveData
-      ? `📊 Delta ${opt.delta?.toFixed(2)} | IV ${opt.impliedVolatility ? (opt.impliedVolatility * 100).toFixed(0) + '%' : 'N/A'} (live data)`
-      : `⚠️ Estimated premium — confirm live Ask in app`,
-    `⚖️ <b>Breakeven:</b> $${opt.breakeven.toFixed(2)}`,
-    ``,
-    `🟢 <b>Buy zone (stock):</b> $${pick.entryZone.low.toFixed(2)} – $${pick.entryZone.high.toFixed(2)}`,
-    `🎯 <b>Take profit:</b> stock $${pick.targetPrice.toFixed(2)}`,
-    `🛑 <b>Stop loss:</b> stock $${pick.stopLoss.toFixed(2)}`,
-    `⏱ <b>Time horizon:</b> ${pick.timeHorizon}`,
-    `💰 <b>Max loss:</b> ${opt.maxLoss}`,
-    `📈 <b>Max gain:</b> ${opt.maxGain}`,
-    ``,
-    `📊 <b>Technicals:</b> ${techEmoji} ${pick.technicals.trend.toUpperCase()} | RSI ${pick.technicals.rsi?.toFixed(0) || 'N/A'} | MACD ${pick.technicals.macd !== null ? (pick.technicals.macd > 0 ? '▲' : '▼') : 'N/A'}`,
-    `📰 <b>Sentiment:</b> ${sentimentBar}`,
-    formatNewsView(pick),
-    `🎲 <b>Catalysts:</b> ${pick.catalysts.slice(0, 2).join(' | ')}`,
-    `⚠️ <b>Risks:</b> ${pick.risks.slice(0, 2).join(' | ')}`,
-    pick.earningsGap?.withinHorizon
-      ? `🗓️ <b>Earnings in ${pick.earningsGap.daysUntil} days</b> (${pick.earningsGap.date}) — within hold window (binary risk)`
-      : '',
-    `🎯 <b>Confidence:</b> ${pick.confidenceScore}/100 | R/R: ${pick.riskRewardRatio.toFixed(1)}:1`,
-  ].join('\n');
 }
 
 function formatStockPick(pick: StockPick, index: number): string {

@@ -34,29 +34,31 @@ export interface MarketRow {
 
 export interface ScoredCandidate extends MarketRow {
   score: number;
-  optionsScore: number;
   reasons: string[];
   strategy: StrategyTag;
 }
 
-// ── Shared: options-contract quality (same for both strategies) ──
-function optionsQuality(quote: StockQuote): { add: number; reasons: string[] } {
+// ── Shared: liquidity/quality score (same for both strategies) ──
+// Same numbers the old options-quality screen used — kept intact (×0.3
+// into the strategy score) so candidate ranking doesn't shift with the
+// options removal. It always measured tradability: price tier, beta, volume.
+function liquidityQuality(quote: StockQuote): { add: number; reasons: string[] } {
   let s = 0;
   const reasons: string[] = [];
 
-  if (quote.price >= 10 && quote.price <= 150) { s += 25; reasons.push('ideal options price range'); }
+  if (quote.price >= 10 && quote.price <= 150) { s += 25; reasons.push('ideal price range'); }
   else if (quote.price > 150 && quote.price <= 500) s += 15;
   else if (quote.price < 10) s -= 10;
 
   if (quote.beta !== null) {
-    if (quote.beta >= 1.5 && quote.beta <= 3.0) { s += 25; reasons.push(`beta ${quote.beta.toFixed(1)} = rich premium`); }
+    if (quote.beta >= 1.5 && quote.beta <= 3.0) { s += 25; reasons.push(`beta ${quote.beta.toFixed(1)} = high energy`); }
     else if (quote.beta >= 1.0 && quote.beta < 1.5) s += 15;
     else if (quote.beta > 3.0) s += 10;
   } else {
     s += 10;
   }
 
-  if (quote.volume > 5000000) { s += 20; reasons.push('high volume = liquid options'); }
+  if (quote.volume > 5000000) { s += 20; reasons.push('high volume = liquid'); }
   else if (quote.volume > 1000000) s += 10;
   else s -= 15;
 
@@ -91,12 +93,11 @@ export function scoreBreakout(row: MarketRow): ScoredCandidate | null {
   const distFrom52wLow = (quote.price - quote.week52Low) / quote.price;
   if (distFrom52wLow < 0.05) score -= 15;
 
-  const oq = optionsQuality(quote);
-  reasons.push(...oq.reasons);
-  const optionsScore = oq.add;
-  score += optionsScore * 0.3;
+  const lq = liquidityQuality(quote);
+  reasons.push(...lq.reasons);
+  score += lq.add * 0.3;
 
-  return { quote, technicals, score, optionsScore, reasons, strategy: 'BREAKOUT' };
+  return { quote, technicals, score, reasons, strategy: 'BREAKOUT' };
 }
 
 // ── Strategy A: PULLBACK in a confirmed uptrend ────────────
@@ -130,12 +131,11 @@ export function scorePullback(row: MarketRow): ScoredCandidate | null {
 
   if (macd != null && macdSignal != null && macd > macdSignal) { score += 10; reasons.push('MACD still positive'); }
 
-  const oq = optionsQuality(quote);
-  reasons.push(...oq.reasons);
-  const optionsScore = oq.add;
-  score += optionsScore * 0.3;
+  const lq = liquidityQuality(quote);
+  reasons.push(...lq.reasons);
+  score += lq.add * 0.3;
 
-  return { quote, technicals, score, optionsScore, reasons, strategy: 'PULLBACK' };
+  return { quote, technicals, score, reasons, strategy: 'PULLBACK' };
 }
 
 // ── Trade-memory feature capture ────────────────────────────
@@ -171,7 +171,6 @@ function newsVerdictFromSentiment(news: NewsArticle[]): NewsVerdict {
 // ── Run AI analysis on a ranked candidate list for one type ──
 async function runPicks(
   candidates: ScoredCandidate[],
-  pickType: 'OPTIONS_CALL' | 'STOCK_LONG',
   count: number,
   strategyTag: StrategyTag,
   analyzed: Set<string>,
@@ -193,14 +192,12 @@ async function runPicks(
       console.log(`[Scanner] 🧠 ${cand.quote.ticker}: showing ${memCtx.neighbors.length} similar past ${strategyTag} trades to the ensemble`);
     }
 
-    const pick = await analyzeStock(cand.quote, cand.technicals, news, pickType,
+    const pick = await analyzeStock(cand.quote, cand.technicals, news,
       memCtx.available ? memCtx.promptBlock : undefined);
 
     const modelsWorking = pick ? (pick.voteBreakdown?.split('⚠️').length ?? 1) - 1 : 0;
     const fullEnsemble = modelsWorking <= 1; // 3+ models actually voted
-    const rrFloor = pickType === 'OPTIONS_CALL'
-      ? (fullEnsemble ? 2.5 : 1.5)
-      : (fullEnsemble ? 2.0 : 1.5);
+    const rrFloor = fullEnsemble ? 2.0 : 1.5;
 
     const qualifies = pick && pick.confidenceScore >= 65 && pick.riskRewardRatio >= rrFloor;
 
@@ -211,7 +208,7 @@ async function runPicks(
       // mark whether it lands inside the trade's hold window. Only
       // done for actual picks (saves Finnhub quota); never blocks.
       const earningsDate = await getNextEarningsDate(cand.quote.ticker);
-      const gap = computeEarningsGap(earningsDate, pick!.timeHorizon, pickType);
+      const gap = computeEarningsGap(earningsDate, pick!.timeHorizon);
       if (gap) {
         pick!.earningsGap = gap;
         if (gap.withinHorizon) {
@@ -249,7 +246,7 @@ async function runPicks(
       });
 
       out.push(pick!);
-      console.log(`[Scanner] ✅ ${strategyTag} ${pickType === 'OPTIONS_CALL' ? 'OPTIONS' : 'STOCK'} PICK: ${pick!.ticker} (${pick!.confidenceScore}/100, R/R ${pick!.riskRewardRatio})`);
+      console.log(`[Scanner] ✅ ${strategyTag} STOCK PICK: ${pick!.ticker} (${pick!.confidenceScore}/100, R/R ${pick!.riskRewardRatio})`);
     } else {
       console.log(`[Scanner] ❌ PASS (${strategyTag}): ${cand.quote.ticker}`);
     }
@@ -263,9 +260,8 @@ async function runPicks(
 
 // ── Full weekly scan — runs BOTH strategies ────────────────
 export async function runWeeklyScan(
-  optionsCount: number = 3,
   stockCount: number = 4
-): Promise<{ optionsPicks: StockPick[]; stockPicks: StockPick[] }> {
+): Promise<{ stockPicks: StockPick[] }> {
 
   console.log('[Scanner] Starting weekly scan (Pullback vs Breakout)...');
   const fixedList = getCandidateTickers();
@@ -307,32 +303,25 @@ export async function runWeeklyScan(
   }
   console.log(`[Scanner] BREAKOUT candidates: ${breakout.length} | PULLBACK candidates: ${pullback.length}`);
 
-  const optionsPicks: StockPick[] = [];
   const stockPicks: StockPick[] = [];
 
   // ── Pass 3: run AI for each strategy ─────────────────────
   // BREAKOUT
   console.log('[Scanner] --- BREAKOUT strategy ---');
-  const bAnalyzed = new Set<string>();
-  const bOptions = [...breakout].sort((a, b) => b.optionsScore - a.optionsScore).filter(c => c.optionsScore >= 30 && c.quote.price >= 5);
   const bStocks = [...breakout].sort((a, b) => b.score - a.score);
-  optionsPicks.push(...await runPicks(bOptions, 'OPTIONS_CALL', optionsCount, 'BREAKOUT', bAnalyzed));
-  stockPicks.push(...await runPicks(bStocks, 'STOCK_LONG', stockCount, 'BREAKOUT', bAnalyzed));
+  stockPicks.push(...await runPicks(bStocks, stockCount, 'BREAKOUT', new Set<string>()));
 
   // PULLBACK
   console.log('[Scanner] --- PULLBACK strategy ---');
-  const aAnalyzed = new Set<string>();
-  const aOptions = [...pullback].sort((a, b) => b.optionsScore - a.optionsScore).filter(c => c.optionsScore >= 30 && c.quote.price >= 5);
   const aStocks = [...pullback].sort((a, b) => b.score - a.score);
-  optionsPicks.push(...await runPicks(aOptions, 'OPTIONS_CALL', optionsCount, 'PULLBACK', aAnalyzed));
-  stockPicks.push(...await runPicks(aStocks, 'STOCK_LONG', stockCount, 'PULLBACK', aAnalyzed));
+  stockPicks.push(...await runPicks(aStocks, stockCount, 'PULLBACK', new Set<string>()));
 
-  const bCount = [...optionsPicks, ...stockPicks].filter(p => p.strategy === 'BREAKOUT').length;
-  const aCount = [...optionsPicks, ...stockPicks].filter(p => p.strategy === 'PULLBACK').length;
-  console.log(`[Scanner] Scan complete: ${optionsPicks.length} options, ${stockPicks.length} stock`);
+  const bCount = stockPicks.filter(p => p.strategy === 'BREAKOUT').length;
+  const aCount = stockPicks.filter(p => p.strategy === 'PULLBACK').length;
+  console.log(`[Scanner] Scan complete: ${stockPicks.length} stock picks`);
   console.log(`[Scanner] By strategy → BREAKOUT: ${bCount} | PULLBACK: ${aCount}`);
 
-  return { optionsPicks, stockPicks };
+  return { stockPicks };
 }
 
 function sleep(ms: number): Promise<void> {

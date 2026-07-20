@@ -1,8 +1,11 @@
 // ============================================================
 // TEST — current-picks.json snapshot
-// Builds sample picks (one option call, one swing), writes the
-// snapshot through the real atomic writer to a temp path, reads
-// it back, and asserts the parsed shape. Run: npm run test:picks
+// Builds sample stock picks, writes the snapshot through the real
+// atomic writer to a temp path, reads it back, and asserts the
+// parsed shape. Also asserts a LEGACY file containing a retired
+// option_call entry still parses without throwing (options picks
+// were removed July 2026; old files keep those entries).
+// Run: npm run test:picks
 // ============================================================
 
 import fs from 'fs';
@@ -18,10 +21,10 @@ const technicals: TechnicalIndicators = {
   trend: 'bullish',
 };
 
-const optionPick: StockPick = {
+const pullbackPick: StockPick = {
   ticker: 'XYZ',
   name: 'XYZ Corp',
-  pickType: 'OPTIONS_CALL',
+  pickType: 'STOCK_LONG',
   currentPrice: 42.15,
   entryZone: { low: 41.5, high: 42.5 },
   targetPrice: 46.50,
@@ -31,39 +34,30 @@ const optionPick: StockPick = {
   confidenceScore: 78,
   catalysts: ['Product launch'],
   risks: ['Sector rotation'],
-  summary: 'Sample option pick',
+  summary: 'Sample pullback pick',
   technicals,
   news: [],
-  options: {
-    ticker: 'XYZ', expirationDate: '2026-08-21', strikePrice: 45,
-    optionType: 'CALL', premium: 1.32, breakeven: 46.32,
-    maxGain: 'unlimited', maxLoss: '$132 per contract',
-    impliedVolatility: 0.38, delta: 0.35, volume: 500, openInterest: 1200,
-    liquidityNote: 'ok', rationale: 'sample',
-  },
   sector: 'Technology',
   addedAt: '2026-07-03T12:00:00.000Z',
   strategy: 'PULLBACK',
   earningsGap: { date: '2026-07-10', daysUntil: 7, withinHorizon: true },
 };
 
-const swingPick: StockPick = {
-  ...optionPick,
+const breakoutPick: StockPick = {
+  ...pullbackPick,
   ticker: 'ABC',
   name: 'ABC Inc',
-  pickType: 'STOCK_LONG',
   currentPrice: 18.40,
   targetPrice: 21.00,
   stopLoss: 17.10,
-  options: undefined,
+  summary: 'Sample breakout pick',
   strategy: 'BREAKOUT',
   earningsGap: undefined,
 };
 
 const report: WeeklyReport = {
   weekOf: 'July 3, 2026',
-  optionsPicks: [optionPick],
-  stockPicks: [swingPick],
+  stockPicks: [pullbackPick, breakoutPick],
   marketOutlook: 'test',
   keyEventsThisWeek: [],
   generatedAt: '2026-07-03T12:00:00.000Z',
@@ -75,25 +69,23 @@ assert.strictEqual(built.generatedAt, report.generatedAt);
 assert.strictEqual(built.scanType, 'weekly');
 assert.strictEqual(built.picks.length, 2);
 
-const [opt, swing] = built.picks;
-assert.deepStrictEqual(opt, {
+const [pull, brk] = built.picks;
+assert.deepStrictEqual(pull, {
   ticker: 'XYZ',
-  type: 'option_call',
+  type: 'swing',
   strategy: 'PULLBACK',
   entryPrice: 42.15,
   target: 46.50,
   stop: 39.80,
-  option: { strike: 45, expiry: '2026-08-21', midAtPick: 1.32 },
   earningsFlag: true,
 });
-assert.deepStrictEqual(swing, {
+assert.deepStrictEqual(brk, {
   ticker: 'ABC',
   type: 'swing',
   strategy: 'BREAKOUT',
   entryPrice: 18.40,
   target: 21.00,
   stop: 17.10,
-  option: null,
   earningsFlag: false,
 });
 
@@ -110,13 +102,56 @@ const parsed = JSON.parse(fs.readFileSync(target, 'utf-8'));
 assert.deepStrictEqual(parsed, built, 'file on disk should parse back to the built object');
 
 // Overwrite (second weekly run) still lands atomically over the old file.
-const nextReport: WeeklyReport = { ...report, optionsPicks: [], generatedAt: '2026-07-10T12:00:00.000Z' };
+const nextReport: WeeklyReport = { ...report, stockPicks: [breakoutPick], generatedAt: '2026-07-10T12:00:00.000Z' };
 writeCurrentPicks(nextReport, target);
 const parsed2 = JSON.parse(fs.readFileSync(target, 'utf-8'));
 assert.strictEqual(parsed2.generatedAt, '2026-07-10T12:00:00.000Z');
 assert.strictEqual(parsed2.picks.length, 1);
 assert.ok(!fs.existsSync(`${target}.tmp`));
 
+// ── 3. Legacy file with a retired option_call entry still reads ──
+// Exact shape the pre-July-2026 writer produced, including the
+// option object. Consumers read this file as plain JSON — parsing
+// and iterating it must not throw, and the swing entries must
+// still be usable alongside the legacy row.
+const legacyFile = {
+  generatedAt: '2026-06-29T12:00:00.000Z',
+  scanType: 'weekly',
+  picks: [
+    {
+      ticker: 'TSLA',
+      type: 'option_call',
+      strategy: 'BREAKOUT',
+      entryPrice: 435.79,
+      target: 470,
+      stop: 415,
+      option: { strike: 445, expiry: '2026-07-10', midAtPick: 8.35 },
+      earningsFlag: false,
+    },
+    {
+      ticker: 'ABC',
+      type: 'swing',
+      strategy: 'PULLBACK',
+      entryPrice: 18.40,
+      target: 21.00,
+      stop: 17.10,
+      option: null,
+      earningsFlag: false,
+    },
+  ],
+};
+const legacyPath = path.join(tmpDir, 'legacy-current-picks.json');
+fs.writeFileSync(legacyPath, JSON.stringify(legacyFile, null, 2));
+
+const legacyParsed = JSON.parse(fs.readFileSync(legacyPath, 'utf-8'));
+assert.strictEqual(legacyParsed.picks.length, 2);
+const legacySwings = legacyParsed.picks.filter((p: any) => p.type === 'swing');
+assert.strictEqual(legacySwings.length, 1);
+assert.strictEqual(legacySwings[0].ticker, 'ABC');
+// The legacy option row is still readable data, just no longer produced.
+const legacyOption = legacyParsed.picks.find((p: any) => p.type === 'option_call');
+assert.ok(legacyOption && legacyOption.option.strike === 445);
+
 fs.rmSync(tmpDir, { recursive: true, force: true });
 
-console.log('✅ current-picks.json test passed (build, atomic write, parse, overwrite)');
+console.log('✅ current-picks.json test passed (build, atomic write, parse, overwrite, legacy read)');

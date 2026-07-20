@@ -1,12 +1,14 @@
 # 📈 Stock Bot — AI-Powered Trading Alerts
 
-Built on the same architecture as your Kalshi Bot. Sends weekly stock & options picks to Telegram for execution on Robinhood.
+Built on the same architecture as your Kalshi Bot. Sends weekly stock picks to Telegram for execution on Robinhood.
+
+> Options picks were removed in July 2026: live tracking showed picks mostly
+> drift +1-2%/week with ~10% hitting targets — workable for stock positions,
+> but a losing profile against theta on weekly OTM calls. Historical
+> OPTIONS_CALL grades remain in the scorecard record.
 
 ## Features
 
-- **Weekly Options Picks** (3 picks, every Monday 10:15am ET; skips market holidays)
-  - Entry zone, strike, expiration, breakeven, max loss/gain
-  - Robinhood-ready order details
 - **Weekly Stock Picks** (3-4 picks, every Monday 10:15am ET; skips market holidays)
   - Entry/exit levels, stop loss, R/R ratio
   - Technical analysis + news sentiment
@@ -104,14 +106,6 @@ Daily Checker (monitors P&L, fires alerts)
 
 When you get a Telegram alert:
 
-### For Options Calls:
-1. Open Robinhood → search the ticker
-2. Tap **Trade → Trade Options**
-3. Select **Call** → pick the strike/expiration from the alert
-4. Tap **Buy to Open**
-5. Set order type: **Limit** (at the premium shown or better)
-
-### For Stocks:
 1. Open Robinhood → search the ticker  
 2. Tap **Buy**
 3. Set **Limit** order at the entry zone high shown

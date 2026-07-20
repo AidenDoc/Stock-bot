@@ -24,6 +24,9 @@ type Strategy = 'PULLBACK' | 'BREAKOUT' | undefined;
 
 export interface GradedPick {
   ticker: string;
+  // 'OPTIONS_CALL' survives only on historical scorecard entries — the bot
+  // stopped generating options picks in July 2026, but old grades keep that
+  // value forever and stay in the public track record. Never narrow this union.
   pickType: 'OPTIONS_CALL' | 'STOCK_LONG';
   strategy?: 'PULLBACK' | 'BREAKOUT';
   entryPrice: number;
@@ -35,10 +38,6 @@ export interface GradedPick {
   outcome: 'WIN' | 'LOSS' | 'OPEN';
   stockReturnPct: number;
   note: string;
-  // ── Options-grading arm (backtest only; optional, set alongside the
-  //    existing stock-drift grade, never replacing it) ──
-  optReturnPct?: number;            // Black-Scholes contract P&L % over the same hold
-  optOutcome?: 'WIN' | 'LOSS';      // option WIN/LOSS by contract P&L sign (≠ stock outcome)
   // Benchmark: this pick's stockReturnPct minus SPY's return over the same
   // pickedDate → gradedDate window. Absent on picks graded before this field
   // existed.
@@ -239,6 +238,8 @@ export function getRecord(): {
   const graded = history.graded.filter(g => g.outcome !== 'OPEN' && g.invalid !== true);
 
   const overall = tally(graded);
+  // OPTIONS_CALL is a closed historical category (no new options picks since
+  // July 2026) — old grades still count toward the public record.
   const opts = graded.filter(g => g.pickType === 'OPTIONS_CALL');
   const stocks = graded.filter(g => g.pickType === 'STOCK_LONG');
 
