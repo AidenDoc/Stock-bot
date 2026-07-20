@@ -5,6 +5,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { StockPick, WeeklyReport, DailyUpdate, NewsArticle } from './types';
 import { memoryHeadToHead, getMemoryStats, MIN_CLOSED_FOR_RETRIEVAL } from './memory/tradeMemory';
+import { getPaperSummary, paperReset } from './paperAccount';
 import fs from 'fs';
 import path from 'path';
 
@@ -118,6 +119,8 @@ export function registerCommands(): void {
       '/open — current open picks',
       '/record — win / loss record',
       '/memory — memory-informed vs baseline picks',
+      '/paper — simulated paper account (equity, positions, cash)',
+      '/paperreset — archive &amp; restart the paper account (asks to confirm)',
       '/help — this list',
     ].join('\n'));
   });
@@ -231,6 +234,77 @@ export function registerCommands(): void {
     await reply(msg.chat.id, lines.join('\n'));
   });
 
+  // /paper — simulated account snapshot. /^\/paper$/ so it never
+  // swallows /paperreset (allow the @botname suffix Telegram appends).
+  bot.onText(/^\/paper(?:@\w+)?\s*$/, async (msg) => {
+    if (String(msg.chat.id) !== ownerId) return;
+    const s = getPaperSummary();
+    if (!s) {
+      await reply(msg.chat.id, '📒 <b>Paper account</b>\n\nAccount file unreadable — check data/paper-account.json on the server.');
+      return;
+    }
+    const sign = (n: number) => (n >= 0 ? '+' : '');
+    const lines = [
+      '📒 <b>Paper account</b> <i>(simulated — no real money)</i>',
+      '',
+      `<b>Equity:</b> $${s.equity.toFixed(2)} (${sign(s.returnPct)}${s.returnPct.toFixed(1)}% since inception)`,
+      s.spyReturnPct != null
+        ? `<b>vs SPY:</b> $${s.startingBalance} in SPY → ${sign(s.spyReturnPct)}${s.spyReturnPct.toFixed(1)}% over the same period`
+        : `<b>vs SPY:</b> not enough history yet`,
+      '',
+    ];
+    if (s.positions.length) {
+      lines.push('<b>Open positions:</b>');
+      for (const p of s.positions) {
+        const dot = p.pnlDollars >= 0 ? '🟢' : '🔴';
+        const frozen = p.markFrozen ? ' 🧊 stale mark' : '';
+        lines.push(`${dot} <b>${p.ticker}</b> ${p.shares} sh — $${p.value.toFixed(2)} (${sign(p.pnlDollars)}$${p.pnlDollars.toFixed(2)}, ${sign(p.pnlPct)}${p.pnlPct.toFixed(1)}%)${frozen}`);
+      }
+    } else {
+      lines.push('<b>Open positions:</b> none');
+    }
+    lines.push('');
+    lines.push(`<b>Cash:</b> $${s.cash.toFixed(2)} settled`);
+    for (const pend of s.pending) {
+      lines.push(`⏳ $${pend.amount.toFixed(2)} settles ${pend.availableDate}`);
+    }
+    await reply(msg.chat.id, lines.join('\n'));
+  });
+
+  // /paperreset — two-step: the first message arms a 5-minute window,
+  // only "/paperreset CONFIRM" inside it actually archives + resets.
+  let paperResetArmedUntil = 0;
+  bot.onText(/^\/paperreset(?:@\w+)?(?:\s+(\S+))?/, async (msg, match) => {
+    if (String(msg.chat.id) !== ownerId) return;
+    const arg = (match?.[1] || '').toUpperCase();
+    if (arg === 'CONFIRM') {
+      if (Date.now() > paperResetArmedUntil) {
+        await reply(msg.chat.id, '📒 Reset not armed (or the 5-minute window expired). Send /paperreset first.');
+        return;
+      }
+      paperResetArmedUntil = 0;
+      try {
+        const { archivedTo, newBalance } = paperReset();
+        await reply(msg.chat.id, [
+          '📒 <b>Paper account reset.</b>',
+          archivedTo ? `Old account archived to <code>${path.basename(archivedTo)}</code>.` : 'No previous account file to archive.',
+          `Fresh start at $${newBalance.toFixed(2)}. First buys land on the next weekly scan.`,
+        ].join('\n'));
+      } catch (err: any) {
+        await reply(msg.chat.id, `⚠️ Reset failed: ${err?.message}`);
+      }
+      return;
+    }
+    paperResetArmedUntil = Date.now() + 5 * 60 * 1000;
+    const s = getPaperSummary();
+    await reply(msg.chat.id, [
+      '⚠️ <b>Reset the paper account?</b>',
+      s ? `Current equity $${s.equity.toFixed(2)} with ${s.positions.length} open position(s) will be archived, then the account restarts fresh.` : 'The current file will be archived, then the account restarts fresh.',
+      '',
+      'Reply <code>/paperreset CONFIRM</code> within 5 minutes to proceed.',
+    ].join('\n'));
+  });
+
   bot.on('polling_error', (err: any) => {
     console.error('[Telegram] Polling error:', err?.message);
   });
@@ -258,6 +332,19 @@ export async function sendWeeklyStockReport(report: WeeklyReport): Promise<void>
     const pick = report.stockPicks[i];
     await send(formatStockPick(pick, i + 1));
     await sleep(1500);
+  }
+
+  // One-line paper-account footer. Best-effort: a missing/corrupt
+  // account file must never break the weekly report.
+  try {
+    const s = getPaperSummary();
+    if (s) {
+      const sign = (n: number) => (n >= 0 ? '+' : '');
+      const spy = s.spyReturnPct != null ? ` | SPY ${sign(s.spyReturnPct)}${s.spyReturnPct.toFixed(1)}%` : '';
+      await send(`📒 <i>Paper account: $${s.equity.toFixed(2)} (${sign(s.returnPct)}${s.returnPct.toFixed(1)}%${spy})</i>`);
+    }
+  } catch (err: any) {
+    console.error('[Telegram] paper footer error:', err?.message);
   }
 }
 

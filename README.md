@@ -15,6 +15,22 @@ Built on the same architecture as your Kalshi Bot. Sends weekly stock picks to T
 - **Daily Position Updates** (Weekdays 9am ET)
   - Current P&L, hold/exit recommendations
   - Target hit & stop loss instant alerts
+- **Simulated Paper Account** — mirrors what real money would do on the bot's picks
+  - Starts at `PAPER_STARTING_BALANCE` (env var, default **$200**); state lives in
+    `data/paper-account.json` (gitignored with the rest of `data/`)
+  - Equal-notional fractional-share sizing per weekly pick ($5 minimum notional;
+    thin cash funds the highest-confidence picks first) — the sizing logic in
+    `src/positionSizing.ts` is pure and is THE module real execution will reuse
+  - Robinhood cash-account realism: sale proceeds settle **T+1** before they can
+    be redeployed; buys spend settled cash only
+  - Sells when the tracker calls target/stop (at the target/stop price) or when
+    weekly grading force-closes a pick (at the graded final price)
+  - Dashboard section (equity curve vs a same-period SPY benchmark), `/paper`
+    Telegram command, and `/paperreset` (two-step confirm; archives the old
+    file to `data/paper-account.archive-<date>.json`)
+  - Paper only — no brokerage connection; if the account file is missing or
+    corrupt the bot logs it and continues (a scan never fails because of the
+    simulator)
 
 ---
 

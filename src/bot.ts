@@ -19,6 +19,7 @@ import { runEvaluation } from './evaluation';
 import { updateChartData } from './chartData';
 import { writeCurrentPicks } from './currentPicks';
 import { nyseHoliday } from './marketCalendar';
+import { paperWeeklyBuy, paperDailyMark, paperApplyGrades } from './paperAccount';
 
 // ── Validate env vars ──────────────────────────────────────
 const REQUIRED_ENV = [
@@ -98,6 +99,10 @@ async function runWeeklyPipeline(): Promise<void> {
     // any duplicate rows before the dashboard reads portfolio.json.
     reconcilePortfolio();
 
+    // Simulated paper account buys the same picks with settled cash
+    // (internally fail-safe — a paper problem never fails the scan).
+    paperWeeklyBuy(stockPicks);
+
     // Step 7: Refresh chart history so the dashboard's Charts panel
     // has data for the new open positions.
     await updateChartData();
@@ -115,7 +120,10 @@ async function runWeeklyPipeline(): Promise<void> {
 async function runDailyPipeline(): Promise<void> {
   console.log('\n[Bot] 📊 Running daily position check...');
   try {
-    await runDailyCheck();
+    const snapshot = await runDailyCheck();
+    // Paper account marks to market on the SAME prices the check just
+    // fetched (no extra API calls); frozen tickers keep their last mark.
+    await paperDailyMark(snapshot.prices, snapshot.frozenTickers);
     // Refresh 3-month price history for open positions (dashboard charts).
     await updateChartData();
     console.log('[Bot] ✅ Daily check complete');
@@ -131,10 +139,14 @@ async function runDailyPipeline(): Promise<void> {
 async function runScorecardPipeline(): Promise<void> {
   console.log('\n[Bot] 📊 Running scorecard...');
   try {
-    await gradePicks(5); // grade picks at least 5 days old
+    const newlyGraded = await gradePicks(5); // grade picks at least 5 days old
     // Resolved picks → CLOSED (out of "active picks", into graded Results)
     // and collapse any legacy duplicate rows. Keeps the open list honest.
     reconcilePortfolio();
+    // Paper account force-closes any still-held pick the grading just
+    // resolved, at the graded final price (WEEK_CLOSE). Consumer only —
+    // grading itself is untouched and unaffected by paper errors.
+    paperApplyGrades(newlyGraded);
     const record = getRecord();
     const recent = getRecentGraded(8);
     await sendScorecard(record, recent);

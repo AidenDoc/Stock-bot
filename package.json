@@ -12,7 +12,9 @@
     "charts": "node dist/bot.js --charts",
     "reconcile": "node dist/bot.js --reconcile",
     "backtest": "ts-node src/backtest.ts",
-    "test:picks": "ts-node src/testCurrentPicks.ts"
+    "test:picks": "ts-node src/testCurrentPicks.ts",
+    "test:sizing": "ts-node src/testPositionSizing.ts",
+    "test:paper": "ts-node src/testPaperAccount.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",

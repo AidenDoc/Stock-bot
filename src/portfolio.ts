@@ -204,15 +204,23 @@ export function reconcilePortfolio(): { closed: number; deduped: number } {
   return { closed, deduped };
 }
 
+// Snapshot of what the daily check saw — handed to the paper-account
+// simulator so it can mark to market WITHOUT any extra API calls.
+export interface DailyCheckSnapshot {
+  prices: Record<string, number>;   // ticker → today's quote
+  frozenTickers: Set<string>;       // stale-quote guard tripped (do not mark on these)
+}
+
 // ── Daily check — update prices, fire alerts ──────────────
-export async function runDailyCheck(): Promise<void> {
+export async function runDailyCheck(): Promise<DailyCheckSnapshot> {
   console.log('[Portfolio] Running daily position check...');
   const positions = loadPortfolio().filter(p => p.status !== 'CLOSED');
+  const snapshot: DailyCheckSnapshot = { prices: {}, frozenTickers: new Set() };
 
   if (positions.length === 0) {
     console.log('[Portfolio] No active positions to check');
     await sendDailyUpdate([]);
-    return;
+    return snapshot;
   }
 
   const updates: DailyUpdate[] = [];
@@ -242,6 +250,7 @@ export async function runDailyCheck(): Promise<void> {
     const currentPrice = quote.price;
     pos.currentPrice = currentPrice;
     pos.pnlPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
+    snapshot.prices[pos.ticker] = currentPrice;
 
     // Frozen-quote guard: a delisted/renamed symbol serves its last trade
     // forever, which reads as "no movement" day after day. Track consecutive
@@ -256,6 +265,8 @@ export async function runDailyCheck(): Promise<void> {
     pos.lastCheckPrice = currentPrice;
     if (pos.stalePriceChecks >= STALE_PRICE_CHECK_THRESHOLD) {
       const checksSeen = pos.stalePriceChecks + 1;
+      snapshot.frozenTickers.add(pos.ticker);
+      delete snapshot.prices[pos.ticker];   // frozen quote is not a usable mark
       console.warn(`[Portfolio] ${pos.ticker}: price frozen at $${currentPrice.toFixed(2)} across ${checksSeen} consecutive daily checks — possible delisting/ticker change`);
       await sendStaleQuoteAlert(
         pos.ticker,
@@ -306,6 +317,7 @@ export async function runDailyCheck(): Promise<void> {
   savePortfolio(positions);
   await sendDailyUpdate(updates);
   console.log(`[Portfolio] Daily check complete. ${updates.length} positions updated.`);
+  return snapshot;
 }
 
 // ── Get portfolio summary ─────────────────────────────────

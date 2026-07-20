@@ -62,6 +62,22 @@ export function nyseHoliday(date?: string): string | null {
   return NYSE_HOLIDAYS[date ?? etNow().date] ?? null;
 }
 
+// Next NYSE trading day strictly after the given ET date (YYYY-MM-DD):
+// skips weekends and full-day holidays. Used for T+1 settlement dates.
+export function nextTradingDay(date: string): string {
+  let d = new Date(`${date}T12:00:00Z`); // noon UTC — immune to DST edge cases
+  for (let i = 0; i < 10; i++) {         // bounded: never more than a few skips
+    d = new Date(d.getTime() + 24 * 60 * 60 * 1000);
+    const iso = d.toISOString().slice(0, 10);
+    const dow = d.getUTCDay();
+    if (dow === 0 || dow === 6) continue;      // weekend
+    if (NYSE_HOLIDAYS[iso]) continue;          // full-day closure
+    return iso;
+  }
+  // Unreachable with a sane calendar; fall back to the raw next day.
+  return d.toISOString().slice(0, 10);
+}
+
 // Whether a daily bar dated `barDate` (YYYY-MM-DD) is final. Today's
 // bar is still forming until the 4:00pm ET close — an intraday scan
 // must not feed it into indicators or volume ratios. Half-days close

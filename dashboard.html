@@ -204,6 +204,16 @@
   }
   .group-label span { color: var(--dim); font-weight: 400; }
 
+  /* ── Paper account ──────────────────────────────── */
+  .paper-head { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; padding: 18px 18px 4px; }
+  @media (max-width: 720px) { .paper-head { grid-template-columns: 1fr; } }
+  .paper-chart { padding: 10px 18px 4px; }
+  .paper-chart svg { width: 100%; height: auto; display: block; }
+  .paper-legend { display: flex; gap: 18px; padding: 0 22px 10px; font-size: 10px; color: var(--muted); }
+  .paper-legend .sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+  .paper-cash { padding: 6px 22px 16px; font-size: 11.5px; color: var(--muted); line-height: 1.8; }
+  .paper-cash b { color: var(--text); }
+
   /* ── Strategy head-to-head ──────────────────────── */
   .vs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 18px; }
   .vs-card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; position: relative; }
@@ -250,6 +260,12 @@
   </div>
 
   <div class="notice hidden" id="notice"></div>
+
+  <div class="panel">
+    <h2>Paper account <span class="count" id="paperEquity"></span>
+      <span class="tag">simulated cash account · fractional shares · T+1 settlement · not real money</span></h2>
+    <div id="paperWrap"></div>
+  </div>
 
   <div class="stats" id="stats"></div>
 
@@ -302,6 +318,7 @@
 
   let portfolio = [];
   let graded = [];
+  let paper = null;          // data/paper-account.json (null = missing/unreadable)
   let history = {};          // ticker -> { dates, closes }
   let liveOn = false;
   let livePrices = {};       // ticker -> current price
@@ -332,13 +349,15 @@
 
   async function loadAll() {
     try {
-      const [pf, sc, hi] = await Promise.all([
+      const [pf, sc, hi, pa] = await Promise.all([
         loadJSON("data/portfolio.json").catch(() => []),
         loadJSON("data/scorecard.json").catch(() => ({ graded: [] })),
         loadJSON("data/history.json").catch(() => ({ data: {} })),
+        loadJSON("data/paper-account.json").catch(() => null),
       ]);
       portfolio = Array.isArray(pf) ? pf : [];
       graded = (sc && Array.isArray(sc.graded)) ? sc.graded : [];
+      paper = (pa && typeof pa.cash === "number" && Array.isArray(pa.positions)) ? pa : null;
       history = (hi && hi.data) ? hi.data : (hi && typeof hi === "object" ? hi : {});
       hideNotice();
     } catch (e) {
@@ -375,6 +394,7 @@
 
   // ---- rendering --------------------------------------------------------
   function render() {
+    renderPaper();
     renderStats();
     renderOpen();
     renderCharts();
@@ -383,6 +403,135 @@
     renderStrategies();
     renderStatus();
     ensureDefaultTV();
+  }
+
+  // ---- paper account ----------------------------------------------------
+  function paperNumbers(p) {
+    const pending = (p.pendingSettlement || []).reduce((s, x) => s + (x.amount || 0), 0);
+    const invested = (p.positions || []).reduce((s, x) => s + x.shares * (x.lastMark != null ? x.lastMark : x.entryPrice), 0);
+    const equity = p.cash + pending + invested;
+    const retPct = p.startingBalance > 0 ? ((equity - p.startingBalance) / p.startingBalance) * 100 : 0;
+    const spyPts = (p.equityHistory || []).filter(h => h.spyClose != null);
+    const spyEquiv = spyPts.length >= 2
+      ? p.startingBalance * (spyPts[spyPts.length - 1].spyClose / spyPts[0].spyClose)
+      : null;
+    return { pending, invested, equity, retPct, spyEquiv, spyPts };
+  }
+
+  function paperEquityChart(p, n) {
+    const hist = p.equityHistory || [];
+    if (hist.length < 2) return `<div class="empty">Equity curve appears after two daily checks.</div>`;
+
+    const W = 640, H = 180, padL = 10, padR = 62, padT = 12, padB = 18;
+    const firstSpy = n.spyPts.length ? n.spyPts[0].spyClose : null;
+    const eq = hist.map(h => h.equity);
+    // SPY-equivalent series: what $startingBalance in SPY would be worth
+    // at each point (null-spyClose days just carry no point).
+    const spySeries = hist.map(h => (firstSpy && h.spyClose != null)
+      ? p.startingBalance * (h.spyClose / firstSpy) : null);
+
+    const all = eq.concat(spySeries.filter(v => v != null));
+    const lo = Math.min.apply(null, all), hi = Math.max.apply(null, all);
+    const span = (hi - lo) || 1;
+    const X = i => padL + (i / (hist.length - 1)) * (W - padL - padR);
+    const Y = v => padT + (1 - (v - lo) / span) * (H - padT - padB);
+
+    const linePath = arr => arr.map((v, i) => v == null ? "" : ((i === 0 || arr[i - 1] == null ? "M" : "L") + X(i).toFixed(1) + " " + Y(v).toFixed(1))).join(" ");
+    const eqColor = eq[eq.length - 1] >= p.startingBalance ? "var(--win)" : "var(--loss)";
+    const lastEq = eq[eq.length - 1];
+    const lastSpy = [...spySeries].reverse().find(v => v != null);
+
+    const label = (v, color, dy) => v == null ? "" :
+      `<text x="${(W - padR + 6).toFixed(1)}" y="${(Y(v) + dy).toFixed(1)}" fill="${color}" font-size="10" font-family="monospace">${fmtMoney(v)}</text>`;
+
+    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+      <line x1="${padL}" y1="${Y(p.startingBalance)}" x2="${W - padR}" y2="${Y(p.startingBalance)}" stroke="var(--dim)" stroke-width="1" stroke-dasharray="2 4"/>
+      <path d="${linePath(spySeries)}" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <path d="${linePath(eq)}" fill="none" stroke="${eqColor}" stroke-width="2"/>
+      ${label(lastEq, eqColor, 3)}
+      ${label(lastSpy, "var(--muted)", lastSpy != null && Math.abs(Y(lastSpy) - Y(lastEq)) < 12 ? 14 : 3)}
+    </svg>`;
+  }
+
+  function renderPaper() {
+    if (!paper) {
+      $("paperEquity").textContent = "";
+      $("paperWrap").innerHTML = `<div class="empty">No paper account yet — it starts on the first weekly scan after deploy (data/paper-account.json).</div>`;
+      return;
+    }
+    const n = paperNumbers(paper);
+    const sgn = v => (v >= 0 ? "+" : "");
+    $("paperEquity").textContent = "(" + fmtMoney(n.equity) + ")";
+
+    const head = `<div class="paper-head">
+      <div class="stat ${n.retPct >= 0 ? "good" : "bad"}">
+        <div class="label">Equity</div>
+        <div class="value num">${fmtMoney(n.equity)}</div>
+        <div class="sub num ${cls(n.retPct)}">${sgn(n.retPct)}${n.retPct.toFixed(1)}% since inception</div>
+      </div>
+      <div class="stat neutral">
+        <div class="label">$${paper.startingBalance} in SPY instead</div>
+        <div class="value num">${n.spyEquiv != null ? fmtMoney(n.spyEquiv) : "—"}</div>
+        <div class="sub">${n.spyEquiv != null ? "same period benchmark" : "needs 2+ daily checks"}</div>
+      </div>
+      <div class="stat neutral">
+        <div class="label">Deployed</div>
+        <div class="value num">${fmtMoney(n.invested)}</div>
+        <div class="sub">${(paper.positions || []).length} open position${(paper.positions || []).length === 1 ? "" : "s"}</div>
+      </div>
+    </div>`;
+
+    const legend = `<div class="paper-legend">
+      <span><span class="sw" style="background:var(--win)"></span>account equity</span>
+      <span><span class="sw" style="background:var(--muted)"></span>SPY equivalent</span>
+      <span><span class="sw" style="background:var(--dim)"></span>starting balance</span>
+    </div>`;
+    const chart = `<div class="paper-chart">${paperEquityChart(paper, n)}</div>` + legend;
+
+    let posHtml = "";
+    if ((paper.positions || []).length) {
+      const rows = paper.positions.map(p2 => {
+        const mark = p2.lastMark != null ? p2.lastMark : p2.entryPrice;
+        const value = p2.shares * mark;
+        const pnl = value - p2.costBasis;
+        const pnlPct = p2.costBasis > 0 ? (pnl / p2.costBasis) * 100 : 0;
+        const frozen = p2.markFrozen ? ' <span class="pill stop" title="stale quote — carrying last good mark">🧊 stale</span>' : "";
+        return `<tr data-tk="${esc(p2.ticker)}" class="rowclick">
+          <td><div class="tk">${esc(p2.ticker)}</div></td>
+          <td>${stratTag(p2.strategy)}</td>
+          <td class="num">${Number(p2.shares).toFixed(5)}</td>
+          <td class="num">${fmtMoney(p2.costBasis)}</td>
+          <td class="num">${fmtMoney(value)}${frozen}</td>
+          <td class="num ${cls(pnl)}">${sgn(pnl)}${fmtMoney(Math.abs(pnl))}</td>
+          <td class="num ${cls(pnlPct)}">${fmtPct(pnlPct)}</td>
+        </tr>`;
+      }).join("");
+      posHtml = `<div class="group-label">Positions <span>(${paper.positions.length})</span></div>` +
+        table(["Ticker", "Strategy", "Shares", "Cost basis", "Value", "P&L $", "P&L %"], rows);
+    }
+
+    let closedHtml = "";
+    const recent = (paper.closedTrades || []).slice(-8).reverse();
+    if (recent.length) {
+      const rows = recent.map(t => `<tr>
+        <td><div class="tk">${esc(t.ticker)}</div></td>
+        <td>${stratTag(t.strategy)}</td>
+        <td>${esc(t.reason)}</td>
+        <td class="num">${esc(String(t.exitDate).slice(0, 10))}</td>
+        <td class="num ${cls(t.pnlDollars)}">${sgn(t.pnlDollars)}${fmtMoney(Math.abs(t.pnlDollars))}</td>
+        <td class="num ${cls(t.pnlPct)}">${fmtPct(t.pnlPct)}</td>
+      </tr>`).join("");
+      closedHtml = `<div class="group-label">Recent closed trades <span>(${recent.length})</span></div>` +
+        table(["Ticker", "Strategy", "Reason", "Exit", "P&L $", "P&L %"], rows);
+    }
+
+    const pendingRows = (paper.pendingSettlement || [])
+      .map(x => `⏳ ${fmtMoney(x.amount)} settles ${esc(x.availableDate)}`).join("<br>");
+    const cash = `<div class="paper-cash">
+      <b>Settled cash:</b> ${fmtMoney(paper.cash)}${pendingRows ? "<br>" + pendingRows : ""}
+    </div>`;
+
+    $("paperWrap").innerHTML = head + chart + posHtml + closedHtml + cash;
   }
 
   function renderStats() {
