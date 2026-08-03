@@ -22,11 +22,15 @@ export interface CurrentPickEntry {
   target: number;
   stop: number;
   earningsFlag: boolean;
+  // V2 trade-plan context (absent on files written before the rolling regime):
+  horizonDays?: number;
+  expiryDate?: string;
 }
 
 export interface CurrentPicksFile {
   generatedAt: string;
-  scanType: 'weekly';
+  // 'weekly' survives on old files; every new write is 'rolling'.
+  scanType: 'weekly' | 'rolling';
   picks: CurrentPickEntry[];
 }
 
@@ -39,6 +43,10 @@ function toEntry(pick: StockPick): CurrentPickEntry {
     target: pick.targetPrice,
     stop: pick.stopLoss,
     earningsFlag: pick.earningsGap?.withinHorizon ?? false,
+    // Only present on V2 picks — omitted (not undefined) so the written
+    // JSON round-trips byte-identically to the built object.
+    ...(pick.horizonDays != null ? { horizonDays: pick.horizonDays } : {}),
+    ...(pick.expiryDate ? { expiryDate: pick.expiryDate } : {}),
   };
 }
 
@@ -46,7 +54,7 @@ function toEntry(pick: StockPick): CurrentPickEntry {
 export function buildCurrentPicks(report: WeeklyReport): CurrentPicksFile {
   return {
     generatedAt: report.generatedAt,
-    scanType: 'weekly',
+    scanType: 'rolling',
     picks: report.stockPicks.map(toEntry),
   };
 }

@@ -8,6 +8,7 @@
 import fs from 'fs';
 import path from 'path';
 import { PortfolioPosition } from './types';
+import { ExitRegime, ExitOutcome } from './tradePlan';
 import { getQuote, getSplitAdjustment, getCloseOnOrBefore, getDailyBars, detectFrozenWindow, SplitEvent } from './marketData';
 import { recordOutcome } from './memory/tradeMemory';
 import { sendGradingReviewAlert, sendStaleQuoteAlert } from './telegram';
@@ -46,6 +47,19 @@ export interface GradedPick {
   // artifacts — e.g. the LC → HAPN phantom picks graded off a frozen quote.
   // Kept as audit history; every stats consumer must exclude these.
   invalid?: boolean;
+
+  // ── V2 trade-plan fields ────────────────────────────────────
+  // Absent exitRegime = legacy V1_WEEKLY grade (weekly drift scoring);
+  // stats must never mix the two regimes. outcome above stays WIN/LOSS
+  // for every legacy consumer; exitOutcome is the V2 truth
+  // (HIT_TARGET / HIT_STOP / TIME_EXIT).
+  exitRegime?: ExitRegime;
+  exitOutcome?: ExitOutcome;
+  rr?: number;
+  horizonDays?: number;
+  daysHeld?: number;               // trading days actually held
+  spyEntryPrice?: number;
+  spyExitPrice?: number;
 }
 
 interface ScorecardHistory {
@@ -88,6 +102,11 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
   const newlyGraded: GradedPick[] = [];
 
   for (const pos of positions) {
+    // V2 trade-plan positions resolve through the exit monitor (TP/SL/
+    // time expiry on completed bars) — the weekly drift grader must
+    // never touch them. It keeps draining legacy V1 rows only.
+    if (pos.exitRegime === 'V2_TRADE_PLAN') continue;
+
     const ageMs = Date.now() - new Date(pos.addedDate).getTime();
     const ageDays = ageMs / (1000 * 60 * 60 * 24);
     if (ageDays < minDays) continue;  // too fresh to grade
@@ -198,6 +217,85 @@ export async function gradePicks(minDays: number = 5): Promise<GradedPick[]> {
   saveHistory(history);
   console.log(`[Scorecard] Graded ${newlyGraded.length} new picks`);
   return newlyGraded;
+}
+
+// ── V2: record a trade-plan exit as a graded pick ───────────
+// Called by the exit monitor when a position resolves on TP, SL, or
+// time expiry. WIN/LOSS stays populated so every legacy consumer
+// (Telegram /record, dashboard, evaluation) keeps working; exitOutcome
+// carries the V2 truth. Idempotent on ticker+pickedDate like gradePicks.
+export interface TradePlanExit {
+  outcome: ExitOutcome;
+  exitDate: string;          // YYYY-MM-DD of the exit bar
+  exitPrice: number;
+  daysHeld: number;          // trading days actually held
+  spyEntryPrice?: number;
+  spyExitPrice?: number;
+}
+
+export function recordTradePlanExit(
+  pos: PortfolioPosition, exit: TradePlanExit,
+): GradedPick | null {
+  const history = loadHistory();
+  const key = `${pos.ticker}_${pos.addedDate}`;
+  if (history.graded.some(g => `${g.ticker}_${g.pickedDate}` === key)) {
+    return null;  // already recorded — the monitor re-running can't double-grade
+  }
+
+  const stockReturnPct = ((exit.exitPrice - pos.entryPrice) / pos.entryPrice) * 100;
+  const outcome: 'WIN' | 'LOSS' =
+    exit.outcome === 'HIT_TARGET' ? 'WIN'
+      : exit.outcome === 'HIT_STOP' ? 'LOSS'
+      : stockReturnPct >= 0 ? 'WIN' : 'LOSS';
+  const note =
+    exit.outcome === 'HIT_TARGET' ? `Hit target $${pos.targetPrice.toFixed(2)} on day ${exit.daysHeld}`
+      : exit.outcome === 'HIT_STOP' ? `Hit stop $${pos.stopLoss.toFixed(2)} on day ${exit.daysHeld}`
+      : `Time exit at $${exit.exitPrice.toFixed(2)} after ${exit.daysHeld} trading days`;
+
+  let excessReturnPct: number | undefined;
+  if (exit.spyEntryPrice && exit.spyExitPrice && exit.spyEntryPrice > 0) {
+    const spyReturnPct = ((exit.spyExitPrice - exit.spyEntryPrice) / exit.spyEntryPrice) * 100;
+    excessReturnPct = parseFloat((stockReturnPct - spyReturnPct).toFixed(2));
+  }
+
+  const graded: GradedPick = {
+    ticker: pos.ticker,
+    pickType: pos.pickType,
+    strategy: pos.strategy,
+    entryPrice: pos.entryPrice,
+    targetPrice: pos.targetPrice,
+    stopLoss: pos.stopLoss,
+    finalPrice: parseFloat(exit.exitPrice.toFixed(2)),
+    pickedDate: pos.addedDate,
+    gradedDate: new Date().toISOString(),
+    outcome,
+    stockReturnPct: parseFloat(stockReturnPct.toFixed(2)),
+    note,
+    excessReturnPct,
+    exitRegime: 'V2_TRADE_PLAN',
+    exitOutcome: exit.outcome,
+    rr: pos.rr,
+    horizonDays: pos.horizonDays,
+    daysHeld: exit.daysHeld,
+    spyEntryPrice: exit.spyEntryPrice,
+    spyExitPrice: exit.spyExitPrice,
+  };
+
+  history.graded.push(graded);
+  saveHistory(history);
+
+  // Close the matching memory record with the same verdict. Idempotent.
+  recordOutcome({
+    ticker: pos.ticker,
+    strategy: pos.strategy,
+    scanDate: pos.addedDate,
+    status: exit.outcome === 'TIME_EXIT' ? 'TIME_EXIT' : exit.outcome,
+    exitDate: exit.exitDate,
+    exitPrice: exit.exitPrice,
+  });
+
+  console.log(`[Scorecard] V2 exit ${pos.ticker} [${pos.strategy || 'n/a'}]: ${exit.outcome} (${stockReturnPct.toFixed(1)}% in ${exit.daysHeld}d)`);
+  return graded;
 }
 
 // ── Helper: tally a subset of graded picks ─────────────────

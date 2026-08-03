@@ -78,6 +78,28 @@ export function nextTradingDay(date: string): string {
   return d.toISOString().slice(0, 10);
 }
 
+// The NYSE trading day `n` trading days strictly after `date`
+// (YYYY-MM-DD). Used to stamp a V2 position's expiryDate at entry.
+export function addTradingDays(date: string, n: number): string {
+  let d = date;
+  for (let i = 0; i < n; i++) d = nextTradingDay(d);
+  return d;
+}
+
+// Trading days strictly after `from` up to and including `to`
+// (both YYYY-MM-DD). 0 when `to` is on/before `from`. Used for
+// "days remaining" displays against a position's expiryDate.
+export function tradingDaysBetween(from: string, to: string): number {
+  let d = from;
+  let n = 0;
+  while (n < 400) {              // bounded — horizons are ≤ ~20 days
+    d = nextTradingDay(d);
+    if (d > to) break;
+    n++;
+  }
+  return n;
+}
+
 // Whether a daily bar dated `barDate` (YYYY-MM-DD) is final. Today's
 // bar is still forming until the 4:00pm ET close — an intraday scan
 // must not feed it into indicators or volume ratios. Half-days close

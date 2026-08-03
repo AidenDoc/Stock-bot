@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { PortfolioPosition, StockPick, DailyUpdate } from './types';
+import { MAX_SLOTS, regimeOf } from './tradePlan';
 import { getQuote, getSplitAdjustment } from './marketData';
 import { getStockNews } from './news';
 import { generatePositionUpdate } from './analyst';
@@ -68,6 +69,30 @@ function sameOpenPick(p: PortfolioPosition, ticker: string, strategy?: string): 
     && (p.strategy ?? '') === (strategy ?? '');
 }
 
+// ── Slot accounting (V2 rolling-replacement regime) ─────────
+// Slots are occupied ONLY by open V2 trade-plan positions. Legacy V1
+// open rows never hold a slot — they drain out through the weekly
+// grading path and are excluded from re-picking via getOpenTickers.
+export function openV2Positions(): PortfolioPosition[] {
+  return loadPortfolio().filter(
+    p => p.status !== 'CLOSED' && regimeOf(p) === 'V2_TRADE_PLAN'
+  );
+}
+
+export function openSlotCount(): { open: number; max: number; free: number } {
+  const open = openV2Positions().length;
+  return { open, max: MAX_SLOTS, free: Math.max(0, MAX_SLOTS - open) };
+}
+
+// Every open ticker, both regimes — the scan excludes all of them so a
+// new V2 entry can never collide with (or silently refresh) an
+// existing row for the same name.
+export function getOpenTickers(): Set<string> {
+  return new Set(
+    loadPortfolio().filter(p => p.status !== 'CLOSED').map(p => p.ticker)
+  );
+}
+
 // ── Add position from a pick ───────────────────────────────
 export function addPosition(pick: StockPick): void {
   const positions = loadPortfolio();
@@ -92,6 +117,7 @@ export function addPosition(pick: StockPick): void {
     return;
   }
 
+  const isV2 = pick.exitRegime === 'V2_TRADE_PLAN';
   const position: PortfolioPosition = {
     ticker: pick.ticker,
     pickType: pick.pickType,
@@ -100,12 +126,20 @@ export function addPosition(pick: StockPick): void {
     targetPrice: pick.targetPrice,
     stopLoss: pick.stopLoss,
     addedDate: new Date().toISOString(),
-    status: 'WATCHING',  // WATCHING = not entered yet, ACTIVE = you're in the trade
+    // V2 trade-plan positions are live from entry (the paper account buys
+    // them the same run); WATCHING only applies to legacy weekly picks.
+    status: isV2 ? 'ACTIVE' : 'WATCHING',
     pnlPercent: 0,
     notes: pick.summary,
     strategy: pick.strategy,  // carry the PULLBACK / BREAKOUT tag through for grading
     techTrend: pick.technicals?.trend,   // technical read at pick time
     newsView: pick.newsView,             // independent news-only view (info-only)
+    // V2 plan contract — fixed at entry, enforced by the exit monitor.
+    exitRegime: pick.exitRegime,
+    rr: isV2 ? pick.riskRewardRatio : undefined,
+    horizonDays: pick.horizonDays,
+    expiryDate: pick.expiryDate,
+    spyEntryPrice: pick.spyEntryPrice,
   };
 
   positions.push(position);

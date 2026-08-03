@@ -49,6 +49,12 @@ export interface PaperPosition {
   lastMark: number;          // last GOOD price seen (starts at entryPrice)
   lastMarkDate: string;      // YYYY-MM-DD of that mark
   markFrozen: boolean;       // true while the stale-quote guard is tripped
+  // V2 trade-plan positions: exits come ONLY from the exit monitor
+  // (completed-bar TP/SL/expiry via paperApplyExits) — the daily mark
+  // never self-closes them off a live quote. Absent = legacy position.
+  exitRegime?: string;
+  horizonDays?: number;
+  expiryDate?: string;       // YYYY-MM-DD — /paper shows days remaining
 }
 
 export interface EquityPoint {
@@ -70,7 +76,9 @@ export interface ClosedTrade {
   exitDate: string;
   pnlDollars: number;
   pnlPct: number;
-  reason: 'HIT_TARGET' | 'HIT_STOP' | 'WEEK_CLOSE';
+  // WEEK_CLOSE survives on legacy V1 closes; TIME_EXIT is the V2
+  // horizon-expiry outcome.
+  reason: 'HIT_TARGET' | 'HIT_STOP' | 'WEEK_CLOSE' | 'TIME_EXIT';
 }
 
 export interface PaperAccount {
@@ -178,11 +186,13 @@ function closePosition(
   console.log(`[Paper] ${reason} ${pos.ticker}: sold ${pos.shares} sh @ $${exitPrice.toFixed(2)} → $${proceeds.toFixed(2)} (P&L ${pnlDollars >= 0 ? '+' : ''}$${pnlDollars.toFixed(2)}), settles ${nextTradingDay(today)}`);
 }
 
-// ── Monday: buy the week's picks with settled cash ──────────
-// Called after the weekly picks are finalized. Settled cash only —
-// pending T+1 proceeds are not spendable yet, exactly like a real
-// Robinhood cash account.
-export function paperWeeklyBuy(picks: StockPick[], today: string = etNow().date): void {
+// ── Buy the scan's picks with settled cash ──────────────────
+// Called after picks are finalized — the initial 5-slot fill and every
+// rolling single-slot replacement alike. Settled cash only — pending
+// T+1 proceeds are not spendable yet, exactly like a real Robinhood
+// cash account. sizePicks splits the settled cash equally across the
+// slots being filled this run ($5 minimum notional per position).
+export function paperBuyPicks(picks: StockPick[], today: string = etNow().date): void {
   try {
     const acct = loadPaperAccount();
     if (!acct) return;
@@ -222,14 +232,17 @@ export function paperWeeklyBuy(picks: StockPick[], today: string = etNow().date)
         lastMark: o.entryPrice,
         lastMarkDate: today,
         markFrozen: false,
+        exitRegime: src.exitRegime,
+        horizonDays: src.horizonDays,
+        expiryDate: src.expiryDate,
       });
       console.log(`[Paper] FILL ${o.ticker}: ${o.shares} sh @ $${o.entryPrice.toFixed(2)} = $${o.costBasis.toFixed(2)}`);
     }
     acct.cash = r2(acct.cash - totalCost);
     savePaperAccount(acct);
-    console.log(`[Paper] Weekly buys done: ${orders.length} fill(s), $${totalCost.toFixed(2)} deployed, $${acct.cash.toFixed(2)} cash left`);
+    console.log(`[Paper] Buys done: ${orders.length} fill(s), $${totalCost.toFixed(2)} deployed, $${acct.cash.toFixed(2)} cash left`);
   } catch (err: any) {
-    console.error('[Paper] weekly buy error (scan unaffected):', err?.message);
+    console.error('[Paper] buy error (scan unaffected):', err?.message);
   }
 }
 
@@ -261,7 +274,14 @@ export async function paperDailyMark(
       if (price == null || !Number.isFinite(price) || price <= 0) continue; // no data today — carry the mark
       pos.markFrozen = false;
 
-      if (price >= pos.targetPrice) {
+      // V2 trade-plan positions only MARK here — their exits come from
+      // the completed-bar exit monitor (paperApplyExits), never from an
+      // intraday quote, so paper stays in lockstep with the official
+      // scorecard record.
+      if (pos.exitRegime === 'V2_TRADE_PLAN') {
+        pos.lastMark = price;
+        pos.lastMarkDate = today;
+      } else if (price >= pos.targetPrice) {
         closePosition(acct, pos, pos.targetPrice, 'HIT_TARGET', today);
       } else if (price <= pos.stopLoss) {
         closePosition(acct, pos, pos.stopLoss, 'HIT_STOP', today);
@@ -293,6 +313,37 @@ export async function paperDailyMark(
     console.log(`[Paper] Marked: equity $${point.equity.toFixed(2)} (cash $${point.cash.toFixed(2)} + invested $${point.invested.toFixed(2)})`);
   } catch (err: any) {
     console.error('[Paper] daily mark error (check unaffected):', err?.message);
+  }
+}
+
+// ── V2 exit-monitor closes ──────────────────────────────────
+// The monitor resolved these positions on completed bars (TP, SL, or
+// time expiry) — sell the matching paper positions at the SAME exit
+// price so paper equity tracks the official record. Proceeds settle
+// T+1 as always. Consumer only: paper errors never affect the monitor.
+export interface PaperExit {
+  ticker: string;
+  strategy?: string | null;
+  exitPrice: number;
+  reason: 'HIT_TARGET' | 'HIT_STOP' | 'TIME_EXIT';
+}
+
+export function paperApplyExits(exits: PaperExit[], today: string = etNow().date): void {
+  try {
+    if (exits.length === 0) return;
+    const acct = loadPaperAccount();
+    if (!acct) return;
+    let closed = 0;
+    for (const e of exits) {
+      const pos = acct.positions.find(p =>
+        p.ticker === e.ticker && (p.strategy ?? '') === (e.strategy ?? ''));
+      if (!pos) continue;
+      closePosition(acct, pos, e.exitPrice, e.reason, today);
+      closed++;
+    }
+    if (closed > 0) savePaperAccount(acct);
+  } catch (err: any) {
+    console.error('[Paper] exit-close error (monitor unaffected):', err?.message);
   }
 }
 
@@ -344,7 +395,13 @@ export interface PaperSummary {
   spyReturnPct: number | null;   // SPY over the same period, from equityHistory
   cash: number;                  // settled
   pending: PendingSettlement[];
-  positions: { ticker: string; strategy: string | null; shares: number; costBasis: number; value: number; pnlDollars: number; pnlPct: number; markFrozen: boolean }[];
+  positions: {
+    ticker: string; strategy: string | null; shares: number; costBasis: number;
+    value: number; pnlDollars: number; pnlPct: number; markFrozen: boolean;
+    // V2 plan context for /paper (absent on legacy positions):
+    targetPrice: number; stopLoss: number; lastMark: number;
+    expiryDate?: string; horizonDays?: number;
+  }[];
   closedTrades: ClosedTrade[];
 }
 
@@ -371,6 +428,8 @@ export function getPaperSummary(): PaperSummary | null {
         costBasis: p.costBasis, value, pnlDollars: pnl,
         pnlPct: p.costBasis > 0 ? r2((pnl / p.costBasis) * 100) : 0,
         markFrozen: p.markFrozen,
+        targetPrice: p.targetPrice, stopLoss: p.stopLoss, lastMark: p.lastMark,
+        expiryDate: p.expiryDate, horizonDays: p.horizonDays,
       };
     }),
     closedTrades: acct.closedTrades,

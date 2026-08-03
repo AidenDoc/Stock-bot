@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
 import { GradedPick } from './scorecard';
+import { regimeOf } from './tradePlan';
 
 const HISTORY_FILE = path.join(process.cwd(), 'data', 'scorecard.json');
 
@@ -73,13 +74,65 @@ async function fetchSpyReturnSince(isoDate: string): Promise<number | null> {
 
 function sign(n: number): string { return n >= 0 ? '+' : ''; }
 
+// ── V2 plan-outcome report ──────────────────────────────────
+// TP / SL / TIME_EXIT rates, expectancy, and SPY excess computed over
+// each pick's ACTUAL holding window (excessReturnPct is stored per pick
+// at exit time) — the honest read on whether the trade plans work.
+function printPlanOutcomes(picks: GradedPick[]): void {
+  const BAR = '─'.repeat(53);
+  console.log('TRADE-PLAN OUTCOMES  (exit = TP / SL / time, whichever first)');
+  console.log(BAR);
+
+  const rows: [string, GradedPick[]][] = [
+    ['ALL', picks],
+    ['BREAKOUT', picks.filter(p => p.strategy === 'BREAKOUT')],
+    ['PULLBACK', picks.filter(p => p.strategy === 'PULLBACK')],
+  ];
+  for (const [label, set] of rows) {
+    const n = set.length;
+    if (n === 0) { console.log(`  ${label.padEnd(9)} N=0`); continue; }
+    const tp = set.filter(p => p.exitOutcome === 'HIT_TARGET').length;
+    const sl = set.filter(p => p.exitOutcome === 'HIT_STOP').length;
+    const te = set.filter(p => p.exitOutcome === 'TIME_EXIT').length;
+    const avgRet = set.reduce((s, p) => s + p.stockReturnPct, 0) / n;
+    const excess = set.filter(p => typeof p.excessReturnPct === 'number').map(p => p.excessReturnPct as number);
+    const avgExcess = excess.length ? excess.reduce((a, b) => a + b, 0) / excess.length : null;
+    const held = set.filter(p => typeof p.daysHeld === 'number').map(p => p.daysHeld as number);
+    const avgHeld = held.length ? held.reduce((a, b) => a + b, 0) / held.length : null;
+    console.log(
+      `  ${label.padEnd(9)} N=${String(n).padStart(3)}  ` +
+      `TP ${((tp / n) * 100).toFixed(0).padStart(3)}%  SL ${((sl / n) * 100).toFixed(0).padStart(3)}%  TIME ${((te / n) * 100).toFixed(0).padStart(3)}%  ` +
+      `avg ${sign(avgRet)}${avgRet.toFixed(2)}%  ` +
+      `vs SPY ${avgExcess != null ? `${sign(avgExcess)}${avgExcess.toFixed(2)}pp` : 'n/a'}  ` +
+      `held ${avgHeld != null ? avgHeld.toFixed(1) + 'd' : 'n/a'}` +
+      (n < 10 ? '  ⚠️ N<10 — pure noise' : '')
+    );
+  }
+  console.log('');
+}
+
 // `picksOverride` lets the backtest harness (Step 3) feed graded replay
 // picks through this exact same report — e.g. one run per strategy for a
 // Pullback-vs-Breakout head-to-head — instead of reading the live file.
+// With NO override it now reports each exit regime separately: the V2
+// trade-plan record first (with plan-outcome rates), then the legacy V1
+// weekly record — the two are never mixed into one number.
 export async function runEvaluation(picksOverride?: GradedPick[], label?: string): Promise<void> {
-  const picks = picksOverride
-    ? picksOverride.filter(g => g.outcome !== 'OPEN')
-    : loadGraded();
+  if (!picksOverride) {
+    const all = loadGraded();
+    const v2 = all.filter(g => regimeOf(g) === 'V2_TRADE_PLAN');
+    const v1 = all.filter(g => regimeOf(g) === 'V1_WEEKLY');
+    await evaluateSet(v2, label ?? 'V2 TRADE-PLAN REGIME (current)');
+    if (v2.length > 0) printPlanOutcomes(v2);
+    if (v1.length > 0) {
+      await evaluateSet(v1, 'V1 WEEKLY REGIME (legacy — weekly drift scoring, different exit rules)');
+    }
+    return;
+  }
+  await evaluateSet(picksOverride.filter(g => g.outcome !== 'OPEN'), label);
+}
+
+async function evaluateSet(picks: GradedPick[], label?: string): Promise<void> {
   const n = picks.length;
 
   const BAR  = '─'.repeat(53);

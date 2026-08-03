@@ -1,20 +1,36 @@
 # 📈 Stock Bot — AI-Powered Trading Alerts
 
-Built on the same architecture as your Kalshi Bot. Sends weekly stock picks to Telegram for execution on Robinhood.
+Built on the same architecture as your Kalshi Bot. Maintains rolling trade-plan positions and sends entries/exits to Telegram for execution on Robinhood.
 
 > Options picks were removed in July 2026: live tracking showed picks mostly
 > drift +1-2%/week with ~10% hitting targets — workable for stock positions,
 > but a losing profile against theta on weekly OTM calls. Historical
 > OPTIONS_CALL grades remain in the scorecard record.
 
+> **August 2026 — V2 trade-plan regime.** The weekly batch-and-score model was
+> replaced with 4–5 rolling position slots. Every pick is a full trade plan
+> fixed at entry (absolute TP, SL, R/R, and a hard horizon in trading days);
+> positions exit on TP, SL, or time expiry — whichever comes first — evaluated
+> on completed daily bars. All records carry an `exitRegime` tag
+> (`V1_WEEKLY` legacy vs `V2_TRADE_PLAN`) and the two never mix in stats or
+> memory retrieval. Run `npm run migrate:regime` once after deploying to tag
+> legacy records, and `npm run rescore` to replay history at 5/10/15/20-day
+> horizons.
+
 ## Features
 
-- **Weekly Stock Picks** (3-4 picks, every Monday 10:15am ET; skips market holidays)
-  - Entry/exit levels, stop loss, R/R ratio
-  - Technical analysis + news sentiment
-- **Daily Position Updates** (Weekdays 9am ET)
-  - Current P&L, hold/exit recommendations
-  - Target hit & stop loss instant alerts
+- **Rolling Trade-Plan Positions** (up to `MAX_SLOTS`, default 5)
+  - Scan runs weekdays 10:15am ET (skips market holidays) but only when a
+    slot is free; it picks exactly enough candidates to fill open slots and
+    never lowers the 0.65 ensemble consensus bar to fill one
+  - Per-strategy plan defaults (env-overridable, see `src/tradePlan.ts`):
+    BREAKOUT 7 trading days, TP +8% / SL −4%; PULLBACK 15 trading days,
+    TP +10% / SL −5% (both R/R 2.0)
+- **Daily Exit Monitor** (Weekdays 9am ET)
+  - Evaluates completed daily bars only: same-bar TP+SL counts as a stop
+    (conservative); horizon expiry exits at that day's close
+  - Exit alerts (🎯 target / 🛑 stop / ⏱ time) with return and SPY excess
+    over the actual holding window; current P&L updates and stop warnings
 - **Simulated Paper Account** — mirrors what real money would do on the bot's picks
   - Starts at `PAPER_STARTING_BALANCE` (env var, default **$200**); state lives in
     `data/paper-account.json` (gitignored with the rest of `data/`)
@@ -93,11 +109,17 @@ pm2 list
 ### Step 5: Test manually
 
 ```bash
-# Test weekly picks RIGHT NOW
-node dist/bot.js --weekly
+# Run the rolling scan RIGHT NOW (fills open slots; --weekly is an alias)
+node dist/bot.js --scan
 
-# Test daily check
+# Dry-run the scan without writing state (cap universe for a quick smoke test)
+node dist/bot.js --scan --dry-run --limit=15
+
+# Daily check + exit monitor
 node dist/bot.js --daily
+
+# Exit monitor only, no writes
+node dist/bot.js --monitor --dry-run
 ```
 
 ---
@@ -169,7 +191,12 @@ stock-bot/
 Edit `getCandidateTickers()` in `src/marketData.ts`
 
 **Change pick frequency/timing:**
-Edit `WEEKLY_CRON` and `DAILY_CRON` in `.env`
+Edit `SCAN_CRON` (default `15 10 * * 1-5`) and `DAILY_CRON` in `.env`.
+(`WEEKLY_CRON` is a dead key from the weekly regime — it's ignored.)
+
+**Trade-plan knobs (all env, defaults in `src/tradePlan.ts`):**
+`MAX_SLOTS`, `BREAKOUT_HORIZON_DAYS`, `BREAKOUT_TP_PCT`, `BREAKOUT_SL_PCT`,
+`PULLBACK_HORIZON_DAYS`, `PULLBACK_TP_PCT`, `PULLBACK_SL_PCT`
 
 **Adjust aggressiveness:**
 In `src/scanner.ts`: lower `score >= 30` threshold for more picks

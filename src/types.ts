@@ -2,6 +2,8 @@
 // STOCK BOT — TYPE DEFINITIONS
 // ============================================================
 
+import type { ExitRegime, ExitOutcome } from './tradePlan';
+
 export interface StockQuote {
   ticker: string;
   name: string;
@@ -75,6 +77,13 @@ export interface StockPick {
     confidence: number;        // 0-100
     rationale: string;         // one-line, news-only justification
   };
+  // V2 trade plan (set by applyTradePlan after a pick qualifies).
+  // targetPrice/stopLoss/riskRewardRatio above ARE the plan's tp/sl/rr;
+  // these add the hard horizon and the regime tag.
+  horizonDays?: number;        // hard cap, in trading days
+  expiryDate?: string;         // YYYY-MM-DD — entry date + horizonDays trading days
+  exitRegime?: ExitRegime;
+  spyEntryPrice?: number;      // SPY at pick time — benchmark basis for excess return
 }
 
 export interface WeeklyReport {
@@ -122,4 +131,19 @@ export interface PortfolioPosition {
   splitAdjustedThrough?: string;   // ISO date — entry/target/stop already rescaled for any splits up to here
   lastCheckPrice?: number;         // price seen on the previous daily check (frozen-quote detection)
   stalePriceChecks?: number;       // consecutive daily checks at an identical price (0 = price moved)
+
+  // ── V2 trade-plan fields ──────────────────────────────────
+  // targetPrice/stopLoss/entryPrice/addedDate above are the plan's
+  // tp / sl / entryPrice / entryDate. Absent exitRegime = legacy
+  // V1_WEEKLY row (the migration tags them explicitly).
+  exitRegime?: ExitRegime;
+  rr?: number;                     // (tp − entry) / (entry − sl), fixed at entry
+  horizonDays?: number;            // hard cap, in trading days
+  expiryDate?: string;             // YYYY-MM-DD — last day the position may live
+  outcome?: ExitOutcome;           // set when the monitor closes the position
+  exitDate?: string;               // YYYY-MM-DD of the exit bar
+  exitPrice?: number;
+  spyEntryPrice?: number;          // SPY at entry (benchmark basis)
+  spyExitPrice?: number;           // SPY close on the exit bar's date
+  excessReturn?: number;           // position return − SPY return, pp, over the actual hold
 }

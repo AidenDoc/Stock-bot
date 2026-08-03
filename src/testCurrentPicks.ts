@@ -66,7 +66,7 @@ const report: WeeklyReport = {
 // ── 1. Pure builder produces the expected shape ─────────────
 const built = buildCurrentPicks(report);
 assert.strictEqual(built.generatedAt, report.generatedAt);
-assert.strictEqual(built.scanType, 'weekly');
+assert.strictEqual(built.scanType, 'rolling');
 assert.strictEqual(built.picks.length, 2);
 
 const [pull, brk] = built.picks;

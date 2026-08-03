@@ -12,6 +12,8 @@
     "charts": "node dist/bot.js --charts",
     "reconcile": "node dist/bot.js --reconcile",
     "backtest": "ts-node src/backtest.ts",
+    "rescore": "ts-node src/rescoreHorizons.ts",
+    "migrate:regime": "ts-node src/migrateExitRegime.ts",
     "test:picks": "ts-node src/testCurrentPicks.ts",
     "test:sizing": "ts-node src/testPositionSizing.ts",
     "test:paper": "ts-node src/testPaperAccount.ts"

@@ -18,6 +18,8 @@ import { getNewsView } from './newsAgent';
 import { analyzeStock } from './analyst';
 import { getDynamicMovers } from './screener';
 import { getMemoryContext, recordPick, TradeFeatures, NewsVerdict } from './memory/tradeMemory';
+import { computePlan, CURRENT_EXIT_REGIME } from './tradePlan';
+import { etNow, addTradingDays } from './marketCalendar';
 
 export type StrategyTag = 'PULLBACK' | 'BREAKOUT';
 
@@ -168,18 +170,42 @@ function newsVerdictFromSentiment(news: NewsArticle[]): NewsVerdict {
   return 'neutral';
 }
 
-// ── Run AI analysis on a ranked candidate list for one type ──
+// ── V2 trade plan: stamp deterministic exit levels on a pick ──
+// The ensemble's own target/stop/RR gate QUALIFICATION (rrFloor below);
+// once a pick qualifies, the deterministic per-strategy plan REPLACES
+// those levels as the actual exit contract. One source of truth:
+// tradePlan.ts. spyPrice (live SPY quote at scan time) is the
+// benchmark basis for this pick's eventual excess-return calc.
+function applyTradePlan(pick: StockPick, spyPrice: number | null): void {
+  const plan = computePlan(pick.currentPrice, pick.strategy);
+  pick.targetPrice = plan.tp;
+  pick.stopLoss = plan.sl;
+  pick.riskRewardRatio = plan.rr;
+  pick.horizonDays = plan.horizonDays;
+  pick.expiryDate = addTradingDays(etNow().date, plan.horizonDays);
+  // Keep this string free of extra digits — news.parseHorizonDays takes
+  // the max number it finds ("by 2026-08-12" would read as 2026 days).
+  pick.timeHorizon = `${plan.horizonDays} trading days`;
+  pick.exitRegime = CURRENT_EXIT_REGIME;
+  if (spyPrice != null && spyPrice > 0) pick.spyEntryPrice = spyPrice;
+}
+
+// ── Run AI analysis on a ranked candidate list ──────────────
+// Candidates may mix strategies (rolling scans rank BREAKOUT and
+// PULLBACK together by score); each is analyzed under its own tag.
 async function runPicks(
   candidates: ScoredCandidate[],
   count: number,
-  strategyTag: StrategyTag,
   analyzed: Set<string>,
+  spyPrice: number | null,
+  dryRun: boolean,
 ): Promise<StockPick[]> {
   const out: StockPick[] = [];
 
   for (const cand of candidates) {
     if (out.length >= count) break;
     if (analyzed.has(cand.quote.ticker)) continue;
+    const strategyTag = cand.strategy;
 
     const news = await getStockNews(cand.quote.ticker, cand.quote.name);
 
@@ -204,12 +230,20 @@ async function runPicks(
     if (qualifies) {
       pick!.strategy = strategyTag;
 
+      // Qualification passed on the ensemble's own levels — now the
+      // deterministic per-strategy trade plan becomes the actual
+      // TP/SL/RR/horizon contract for this position.
+      applyTradePlan(pick!, spyPrice);
+
       // Info-only earnings flag: resolve the next earnings date and
       // mark whether it lands inside the trade's hold window. Only
       // done for actual picks (saves Finnhub quota); never blocks.
       const earningsDate = await getNextEarningsDate(cand.quote.ticker);
       const gap = computeEarningsGap(earningsDate, pick!.timeHorizon);
       if (gap) {
+        // The plan has an exact trading-day expiry — use it instead of
+        // the string-parsed calendar approximation.
+        if (pick!.expiryDate) gap.withinHorizon = gap.date <= pick!.expiryDate;
         pick!.earningsGap = gap;
         if (gap.withinHorizon) {
           console.log(`[Scanner] ⚠️ ${pick!.ticker} earnings in ${gap.daysUntil}d — within ${pick!.timeHorizon} hold window`);
@@ -230,7 +264,8 @@ async function runPicks(
       // Record the accepted pick in the trade memory bank. Stored
       // newsVerdict comes from the live news agent when it produced a
       // view; memoryShown is the A/B flag for the head-to-head eval.
-      recordPick({
+      // Dry runs record nothing anywhere.
+      if (!dryRun) recordPick({
         ticker: pick!.ticker,
         strategy: strategyTag,
         scanDate: pick!.addedAt,
@@ -258,17 +293,39 @@ async function runPicks(
   return out;
 }
 
-// ── Full weekly scan — runs BOTH strategies ────────────────
-export async function runWeeklyScan(
-  stockCount: number = 4
-): Promise<{ stockPicks: StockPick[] }> {
+// ── Full scan — runs BOTH strategies, fills open slots ─────
+// Rolling-replacement scan: `maxPicks` = number of open slots to fill
+// (usually 1; up to MAX_SLOTS on the first run under the new regime).
+// Both strategies are scored and their candidates ranked TOGETHER by
+// score, so a freed slot goes to the best setup available today
+// regardless of which strategy produced it. Never lowers the 0.65
+// consensus bar to fill a slot — fewer qualifying picks than slots
+// just leaves slots open for the next scan.
+export interface ScanOptions {
+  dryRun?: boolean;               // analyze but write nothing (no memory records)
+  excludeTickers?: Set<string>;   // tickers already held — never double-enter
+  universeLimit?: number;         // cap the universe (fast dry-run smoke tests)
+}
 
-  console.log('[Scanner] Starting weekly scan (Pullback vs Breakout)...');
+export async function runScan(
+  maxPicks: number,
+  opts: ScanOptions = {},
+): Promise<{ stockPicks: StockPick[] }> {
+  const { dryRun = false, excludeTickers = new Set<string>(), universeLimit } = opts;
+
+  console.log(`[Scanner] Starting scan (Pullback vs Breakout) — filling up to ${maxPicks} slot(s)${dryRun ? ' [DRY RUN]' : ''}...`);
   const fixedList = getCandidateTickers();
   const movers = await getDynamicMovers();
-  // Merge fixed universe + today's live movers, deduped.
-  const candidates = [...new Set([...fixedList, ...movers])];
-  console.log(`[Scanner] Universe: ${fixedList.length} fixed + ${movers.length} movers = ${candidates.length} unique`);
+  // Merge fixed universe + today's live movers, deduped; drop held names.
+  let candidates = [...new Set([...fixedList, ...movers])]
+    .filter(t => !excludeTickers.has(t));
+  if (universeLimit && universeLimit > 0) candidates = candidates.slice(0, universeLimit);
+  console.log(`[Scanner] Universe: ${fixedList.length} fixed + ${movers.length} movers = ${candidates.length} scannable (${excludeTickers.size} held excluded)`);
+
+  // Live SPY quote — the benchmark basis stamped on each new pick,
+  // matching the live-quote entry price convention.
+  const spyQuote = await getQuote('SPY');
+  const spyPrice = spyQuote?.price ?? null;
 
   // ── Pass 1: fetch each ticker's data ONCE ────────────────
   console.log(`[Scanner] Fetching data for ${candidates.length} tickers...`);
@@ -303,22 +360,16 @@ export async function runWeeklyScan(
   }
   console.log(`[Scanner] BREAKOUT candidates: ${breakout.length} | PULLBACK candidates: ${pullback.length}`);
 
-  const stockPicks: StockPick[] = [];
-
-  // ── Pass 3: run AI for each strategy ─────────────────────
-  // BREAKOUT
-  console.log('[Scanner] --- BREAKOUT strategy ---');
-  const bStocks = [...breakout].sort((a, b) => b.score - a.score);
-  stockPicks.push(...await runPicks(bStocks, stockCount, 'BREAKOUT', new Set<string>()));
-
-  // PULLBACK
-  console.log('[Scanner] --- PULLBACK strategy ---');
-  const aStocks = [...pullback].sort((a, b) => b.score - a.score);
-  stockPicks.push(...await runPicks(aStocks, stockCount, 'PULLBACK', new Set<string>()));
+  // ── Pass 3: run AI down the MERGED ranking until slots fill ──
+  // A ticker scoring under both strategies is analyzed once, under its
+  // higher-scoring strategy (the merged sort puts that one first; the
+  // shared `analyzed` set skips the second entry).
+  const merged = [...breakout, ...pullback].sort((a, b) => b.score - a.score);
+  const stockPicks = await runPicks(merged, maxPicks, new Set<string>(), spyPrice, dryRun);
 
   const bCount = stockPicks.filter(p => p.strategy === 'BREAKOUT').length;
   const aCount = stockPicks.filter(p => p.strategy === 'PULLBACK').length;
-  console.log(`[Scanner] Scan complete: ${stockPicks.length} stock picks`);
+  console.log(`[Scanner] Scan complete: ${stockPicks.length} stock picks (${maxPicks} slot(s) requested)`);
   console.log(`[Scanner] By strategy → BREAKOUT: ${bCount} | PULLBACK: ${aCount}`);
 
   return { stockPicks };

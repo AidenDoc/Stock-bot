@@ -6,6 +6,8 @@ import TelegramBot from 'node-telegram-bot-api';
 import { StockPick, WeeklyReport, DailyUpdate, NewsArticle } from './types';
 import { memoryHeadToHead, getMemoryStats, MIN_CLOSED_FOR_RETRIEVAL } from './memory/tradeMemory';
 import { getPaperSummary, paperReset } from './paperAccount';
+import { etNow, tradingDaysBetween } from './marketCalendar';
+import { MAX_SLOTS } from './tradePlan';
 import fs from 'fs';
 import path from 'path';
 
@@ -141,7 +143,7 @@ export function registerCommands(): void {
     const pf = loadJSON<any[]>(PORTFOLIO_FILE, []);
     const open = (Array.isArray(pf) ? pf : []).filter(p => p.status !== 'CLOSED');
     if (open.length === 0) {
-      await reply(msg.chat.id, '📭 <b>Open positions</b>\n\nNone right now. The next scan runs Monday 8:00 AM ET.');
+      await reply(msg.chat.id, '📭 <b>Open positions</b>\n\nNone right now. The scan runs weekday mornings (10:15 AM ET) whenever a slot is open.');
       return;
     }
     const fmtLine = (p: any) => {
@@ -254,14 +256,25 @@ export function registerCommands(): void {
       '',
     ];
     if (s.positions.length) {
-      lines.push('<b>Open positions:</b>');
+      lines.push(`<b>Open slots (${s.positions.length}/${MAX_SLOTS}):</b>`);
+      const today = etNow().date;
       for (const p of s.positions) {
         const dot = p.pnlDollars >= 0 ? '🟢' : '🔴';
         const frozen = p.markFrozen ? ' 🧊 stale mark' : '';
-        lines.push(`${dot} <b>${p.ticker}</b> ${p.shares} sh — $${p.value.toFixed(2)} (${sign(p.pnlDollars)}$${p.pnlDollars.toFixed(2)}, ${sign(p.pnlPct)}${p.pnlPct.toFixed(1)}%)${frozen}`);
+        lines.push(`${dot} <b>${p.ticker}</b>${p.strategy ? ` (${p.strategy})` : ''} ${p.shares} sh — $${p.value.toFixed(2)} (${sign(p.pnlDollars)}$${p.pnlDollars.toFixed(2)}, ${sign(p.pnlPct)}${p.pnlPct.toFixed(1)}%)${frozen}`);
+        // Plan line for V2 slots: days left + distance to TP/SL from the last mark.
+        if (p.expiryDate && p.lastMark > 0) {
+          const daysLeft = tradingDaysBetween(today, p.expiryDate);
+          const toTp = ((p.targetPrice - p.lastMark) / p.lastMark) * 100;
+          const toSl = ((p.stopLoss - p.lastMark) / p.lastMark) * 100;
+          lines.push(`   ⏳ ${daysLeft}d left | 🎯 $${p.targetPrice.toFixed(2)} (${sign(toTp)}${toTp.toFixed(1)}%) | 🛑 $${p.stopLoss.toFixed(2)} (${toSl.toFixed(1)}%)`);
+        }
+      }
+      if (s.positions.length < MAX_SLOTS) {
+        lines.push(`▫️ ${MAX_SLOTS - s.positions.length} slot(s) open — next scan fills them if a setup clears the bar.`);
       }
     } else {
-      lines.push('<b>Open positions:</b> none');
+      lines.push(`<b>Open slots (0/${MAX_SLOTS}):</b> none — next scan fills them if setups clear the bar.`);
     }
     lines.push('');
     lines.push(`<b>Cash:</b> $${s.cash.toFixed(2)} settled`);
@@ -314,9 +327,9 @@ export function registerCommands(): void {
 
 export async function sendWeeklyStockReport(report: WeeklyReport): Promise<void> {
   const header = [
-    `📊 <b>WEEKLY STOCK PICKS — ${report.weekOf}</b>`,
+    `📊 <b>NEW POSITION${report.stockPicks.length === 1 ? '' : 'S'} — ${report.weekOf}</b>`,
     `━━━━━━━━━━━━━━━━━━━━━━━━`,
-    `Swing trades for Robinhood 📱`,
+    `Trade-plan entries (TP / SL / hard expiry) 📱`,
     ``,
     `🌍 <b>Market Outlook:</b>`,
     report.marketOutlook,
@@ -404,6 +417,41 @@ export async function sendStopLossAlert(ticker: string, price: number, stopPrice
   await send(msg);
 }
 
+// ── V2 exit alert — fired by the exit monitor when a plan resolves ──
+export interface ExitAlertInfo {
+  ticker: string;
+  strategy?: string;
+  outcome: 'HIT_TARGET' | 'HIT_STOP' | 'TIME_EXIT';
+  entryPrice: number;
+  exitPrice: number;
+  exitDate: string;
+  daysHeld: number;
+  returnPct: number;
+  excessReturn?: number;
+}
+
+export async function sendExitAlert(e: ExitAlertInfo): Promise<void> {
+  const style = e.outcome === 'HIT_TARGET'
+    ? { icon: '🎯', title: 'TARGET HIT' }
+    : e.outcome === 'HIT_STOP'
+      ? { icon: '🛑', title: 'STOPPED OUT' }
+      : { icon: '⏱', title: 'TIME EXIT' };
+  const sign = (n: number) => (n >= 0 ? '+' : '');
+  const msg = [
+    `${style.icon} <b>${style.title}: ${e.ticker}</b>${e.strategy ? ` (${e.strategy})` : ''}`,
+    ``,
+    `Entry $${e.entryPrice.toFixed(2)} → Exit $${e.exitPrice.toFixed(2)} on ${e.exitDate}`,
+    `📊 Return: <b>${sign(e.returnPct)}${e.returnPct.toFixed(1)}%</b> in ${e.daysHeld} trading day${e.daysHeld === 1 ? '' : 's'}`,
+    e.excessReturn != null
+      ? `⚖️ vs SPY over the same hold: <b>${sign(e.excessReturn)}${e.excessReturn.toFixed(1)}pp</b>`
+      : `⚖️ vs SPY: no benchmark data`,
+    ``,
+    `<i>Slot freed — the next scan looks for a replacement.</i>`,
+  ].join('\n');
+
+  await send(msg);
+}
+
 export async function sendTradeSignal(pick: StockPick): Promise<void> {
   const msg = [
     `📈 <b>TRADE SIGNAL: ${pick.ticker}</b>`,
@@ -427,9 +475,9 @@ export async function sendStartupMessage(): Promise<void> {
     `✅ AI analyst ready (Claude)`,
     `✅ Telegram notifications active`,
     ``,
-    `📅 Weekly picks: Every Monday 8:00 AM ET`,
-    `📊 Daily updates: Weekdays 9:00 AM ET`,
-    `🔔 Instant alerts: Target hits & stop warnings`,
+    `📅 Rolling scan: weekdays 10:15 AM ET (fills open slots, up to ${MAX_SLOTS})`,
+    `📊 Daily monitor: weekdays 9:00 AM ET (TP / SL / time-expiry exits)`,
+    `🔔 Instant alerts: exits, stop warnings, data-quality flags`,
     ``,
     `💬 Try /dashboard, /open, or /record`,
     ``,
@@ -560,8 +608,9 @@ function formatStockPick(pick: StockPick, index: number): string {
     ``,
     `🟢 <b>Buy zone:</b> $${pick.entryZone.low.toFixed(2)} – $${pick.entryZone.high.toFixed(2)}`,
     `🎯 <b>Take profit:</b> $${pick.targetPrice.toFixed(2)} (+${gainTarget}%)`,
-    `🛑 <b>Stop loss:</b> $${pick.stopLoss.toFixed(2)}`,
-    `⏱ <b>Time horizon:</b> ${pick.timeHorizon} | <b>R/R:</b> ${pick.riskRewardRatio.toFixed(1)}:1`,
+    `🛑 <b>Stop loss:</b> $${pick.stopLoss.toFixed(2)} (${(((pick.stopLoss - pick.currentPrice) / pick.currentPrice) * 100).toFixed(1)}%)`,
+    `⏱ <b>Horizon:</b> ${pick.timeHorizon}${pick.expiryDate ? ` — expires <b>${pick.expiryDate}</b>` : ''} | <b>R/R:</b> ${pick.riskRewardRatio.toFixed(1)}:1`,
+    `📋 <i>Exit on whichever comes first: target, stop, or expiry.</i>`,
     ``,
     `📊 <b>Technicals:</b> ${techEmoji} ${pick.technicals.trend.toUpperCase()} | RSI ${pick.technicals.rsi?.toFixed(0) || 'N/A'}`,
     `SMA50: $${pick.technicals.sma50?.toFixed(2) || 'N/A'} | SMA200: $${pick.technicals.sma200?.toFixed(2) || 'N/A'}`,

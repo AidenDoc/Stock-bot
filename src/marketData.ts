@@ -312,6 +312,63 @@ export async function getDailyBars(ticker: string, sinceISO: string): Promise<Da
   }
 }
 
+// ── Daily OHLC bars over a window (exit checks, horizon re-scoring) ──
+// COMPLETED bars only (isBarComplete) — the in-progress day's high/low
+// would let an exit trigger off a half-formed bar. Same partial-bar rule
+// as getTechnicals; live quotes stay reserved for entry pricing.
+export interface DailyOHLCBar {
+  date: string;    // YYYY-MM-DD
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export async function getDailyOHLC(ticker: string, sinceISO: string): Promise<DailyOHLCBar[] | null> {
+  try {
+    const since = new Date(sinceISO);
+    if (isNaN(since.getTime())) return null;
+    const period1 = Math.floor(since.getTime() / 1000);
+    const period2 = Math.floor(Date.now() / 1000) + 86400;
+
+    const res = await axios.get(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}`,
+      { params: { interval: '1d', period1, period2 }, headers: YF_HEADERS, timeout: 10000 }
+    );
+
+    const result = res.data?.chart?.result?.[0];
+    if (!result) return null;
+    const ts: number[] = result.timestamp || [];
+    const q = result.indicators?.quote?.[0] || {};
+    const closes: (number | null)[] = q.close || [];
+    const opens: (number | null)[] = q.open || [];
+    const highs: (number | null)[] = q.high || [];
+    const lows: (number | null)[] = q.low || [];
+    const volumes: (number | null)[] = q.volume || [];
+
+    const bars: DailyOHLCBar[] = [];
+    for (let i = 0; i < ts.length; i++) {
+      const c = closes[i];
+      if (c == null) continue; // gap/holiday row — anchor on close, like backtest fetchBars
+      const date = new Date(ts[i] * 1000).toISOString().slice(0, 10);
+      if (!isBarComplete(date)) continue;
+      bars.push({
+        date,
+        open: opens[i] ?? c,
+        high: highs[i] ?? c,
+        low: lows[i] ?? c,
+        close: c,
+        volume: volumes[i] ?? 0,
+      });
+    }
+    return bars;
+  } catch (err: any) {
+    console.error(`[MarketData] getDailyOHLC error for ${ticker}:`, err?.message);
+    return null;
+  }
+}
+
 // ── Frozen-window detection ─────────────────────────────────
 // A ticker change (e.g. LC → HAPN on 2026-06-22) leaves the dead symbol
 // serving its frozen last trade: identical closes, zero volume, no new

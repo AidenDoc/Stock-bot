@@ -20,12 +20,17 @@
 
 import fs from 'fs';
 import path from 'path';
+import { ExitRegime, CURRENT_EXIT_REGIME, regimeOf } from '../tradePlan';
 
 const MEMORY_FILE = path.join(process.cwd(), 'data', 'trade-memory.json');
 
 // ── Tuning knobs ────────────────────────────────────────────
 // Retrieval stays OFF until a strategy has this many closed trades —
 // below that, "nearest" neighbors are noise, not signal.
+// Counted WITHIN the current exit regime only: outcomes produced under
+// different exit rules aren't comparable, so the V2 switch deliberately
+// re-arms this gate for both strategies (V1 records stay stored but are
+// never retrieved and never count).
 export const MIN_CLOSED_FOR_RETRIEVAL = 10;
 
 // How many similar past trades are shown to the grader.
@@ -58,7 +63,10 @@ export interface TradeFeatures {
   marketRegime?: string;
 }
 
-export type TradeStatus = 'OPEN' | 'HIT_TARGET' | 'HIT_STOP' | 'CLOSED_FLAT';
+// TIME_EXIT is the V2 horizon-expiry outcome; CLOSED_FLAT survives on
+// legacy V1 records (weekly drift closes) — treat both as "closed, graded
+// by return sign".
+export type TradeStatus = 'OPEN' | 'HIT_TARGET' | 'HIT_STOP' | 'CLOSED_FLAT' | 'TIME_EXIT';
 
 export interface TradeRecord {
   ticker: string;
@@ -75,6 +83,9 @@ export interface TradeRecord {
   exitPrice?: number;
   pnlPct?: number;
   daysHeld?: number;
+  // Absent on legacy rows = V1_WEEKLY (the migration tags them). Records
+  // from different regimes never mix in retrieval, gates, or the A/B eval.
+  exitRegime?: ExitRegime;
 }
 
 interface MemoryFile {
@@ -118,7 +129,14 @@ function isClosed(r: TradeRecord): boolean {
 function isWin(r: TradeRecord): boolean {
   if (r.status === 'HIT_TARGET') return true;
   if (r.status === 'HIT_STOP') return false;
-  return (r.pnlPct ?? 0) >= 0;   // CLOSED_FLAT: graded by return sign
+  return (r.pnlPct ?? 0) >= 0;   // CLOSED_FLAT / TIME_EXIT: graded by return sign
+}
+
+// Only records from the CURRENT regime participate in retrieval, gates,
+// and the memory-vs-baseline A/B — V1 outcomes came from different exit
+// rules and would poison V2 similarity lookups.
+function isCurrentRegime(r: TradeRecord): boolean {
+  return regimeOf(r) === CURRENT_EXIT_REGIME;
 }
 
 // ── Similarity ──────────────────────────────────────────────
@@ -188,6 +206,7 @@ export function recordPick(input: RecordPickInput): void {
     ensemble: input.ensemble,
     memoryShown: input.memoryShown,
     status: 'OPEN',
+    exitRegime: CURRENT_EXIT_REGIME,
   });
   saveMemory(mem);
   console.log(`[TradeMemory] Recorded pick ${input.ticker} (${strategy || 'n/a'}) — memoryShown=${input.memoryShown}`);
@@ -198,7 +217,7 @@ export interface RecordOutcomeInput {
   ticker: string;
   strategy?: string;
   scanDate: string;
-  status: 'HIT_TARGET' | 'HIT_STOP' | 'CLOSED_FLAT';
+  status: 'HIT_TARGET' | 'HIT_STOP' | 'CLOSED_FLAT' | 'TIME_EXIT';
   exitDate: string;
   exitPrice: number;
 }
@@ -255,7 +274,7 @@ export interface MemoryContext {
 export function getMemoryContext(strategy: string, features: TradeFeatures): MemoryContext {
   const mem = loadMemory();
   const closed = mem.records.filter(
-    r => isClosed(r) && r.strategy === normStrategy(strategy)
+    r => isClosed(r) && isCurrentRegime(r) && r.strategy === normStrategy(strategy)
   );
 
   if (closed.length < MIN_CLOSED_FOR_RETRIEVAL) {
@@ -279,6 +298,7 @@ export function getMemoryContext(strategy: string, features: TradeFeatures): Mem
     const f = x.r.features;
     const outcome = x.r.status === 'HIT_TARGET' ? 'HIT TARGET'
       : x.r.status === 'HIT_STOP' ? 'HIT STOP'
+      : x.r.status === 'TIME_EXIT' ? `TIME EXIT ${(x.r.pnlPct ?? 0) >= 0 ? 'UP' : 'DOWN'}`
       : `CLOSED ${(x.r.pnlPct ?? 0) >= 0 ? 'UP' : 'DOWN'}`;
     const parts = [
       f.rsi != null ? `RSI ${f.rsi.toFixed(0)}` : null,
@@ -329,8 +349,10 @@ function tallySide(records: TradeRecord[]): HeadToHeadSide {
   };
 }
 
+// Current-regime records only — the A/B compares memory-informed vs
+// baseline picks under the SAME exit rules.
 export function memoryHeadToHead(): HeadToHead {
-  const closed = loadMemory().records.filter(isClosed);
+  const closed = loadMemory().records.filter(r => isClosed(r) && isCurrentRegime(r));
   return {
     memory: tallySide(closed.filter(r => r.memoryShown)),
     baseline: tallySide(closed.filter(r => !r.memoryShown)),
@@ -338,11 +360,18 @@ export function memoryHeadToHead(): HeadToHead {
 }
 
 // ── Introspection helpers (dashboard / debugging) ────────────
-export function getMemoryStats(): { total: number; open: number; closedByStrategy: Record<string, number> } {
+export function getMemoryStats(): {
+  total: number;
+  open: number;
+  closedByStrategy: Record<string, number>;   // current regime — these feed the gate
+  legacyClosed: number;                       // V1 records: stored, never retrieved
+} {
   const records = loadMemory().records;
   const closedByStrategy: Record<string, number> = {};
+  let legacyClosed = 0;
   for (const r of records) {
     if (!isClosed(r)) continue;
+    if (!isCurrentRegime(r)) { legacyClosed++; continue; }
     const key = r.strategy || 'n/a';
     closedByStrategy[key] = (closedByStrategy[key] || 0) + 1;
   }
@@ -350,5 +379,6 @@ export function getMemoryStats(): { total: number; open: number; closedByStrateg
     total: records.length,
     open: records.filter(r => r.status === 'OPEN').length,
     closedByStrategy,
+    legacyClosed,
   };
 }

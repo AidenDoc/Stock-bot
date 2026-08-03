@@ -22,7 +22,7 @@ process.env.PAPER_STARTING_BALANCE = '200';
 
 /* eslint-disable @typescript-eslint/no-var-requires */
 const {
-  paperWeeklyBuy, paperDailyMark, paperApplyGrades, accountEquity,
+  paperBuyPicks, paperDailyMark, paperApplyGrades, accountEquity,
   loadPaperAccount, getPaperSummary,
 } = require('./paperAccount');
 
@@ -47,7 +47,7 @@ function mkPick(ticker: string, price: number, target: number, stop: number, con
 }
 
 // ── Monday 2026-07-20: seed $200, buy 3 picks ───────────────
-paperWeeklyBuy([
+paperBuyPicks([
   mkPick('AAA', 40, 44, 37, 80, 'PULLBACK'),
   mkPick('BBB', 20, 22, 18.6, 75, 'BREAKOUT'),
   mkPick('CCC', 10, 11, 9.3, 70, 'PULLBACK'),
@@ -72,7 +72,7 @@ assert.ok(Math.abs(day0 - 200) <= 0.03, `day-0 equity $${day0} within rounding d
 console.log(`1. Monday buys ✅  3 fills totaling $${spent.toFixed(2)}, cash $${acct.cash.toFixed(2)}`);
 
 // Re-running the same scan must not double-buy held names.
-paperWeeklyBuy([mkPick('AAA', 41, 44, 37, 80, 'PULLBACK')], '2026-07-20');
+paperBuyPicks([mkPick('AAA', 41, 44, 37, 80, 'PULLBACK')], '2026-07-20');
 acct = readAcct();
 assert.strictEqual(acct.positions.length, 3, 'already-held ticker+strategy not re-bought');
 console.log('2. duplicate-buy guard ✅');
@@ -172,7 +172,7 @@ console.log('2. duplicate-buy guard ✅');
   fs.writeFileSync(ACCOUNT, '{not json');
   assert.strictEqual(loadPaperAccount(), null, 'corrupt file → null, not a throw');
   await paperDailyMark({ AAA: 1 }, new Set(), { today: '2026-07-28', spyClose: 508 }); // must not throw
-  paperWeeklyBuy([mkPick('DDD', 5, 6, 4.5, 70, 'PULLBACK')], '2026-07-28');            // must not throw
+  paperBuyPicks([mkPick('DDD', 5, 6, 4.5, 70, 'PULLBACK')], '2026-07-28');            // must not throw
   assert.strictEqual(fs.readFileSync(ACCOUNT, 'utf-8'), '{not json', 'corrupt file left untouched for inspection');
   console.log('9. corrupt-file guard ✅  ops no-op, file preserved');
 

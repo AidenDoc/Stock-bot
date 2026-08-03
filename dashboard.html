@@ -534,26 +534,36 @@
     $("paperWrap").innerHTML = head + chart + posHtml + closedHtml + cash;
   }
 
+  const isV2 = g => g && g.exitRegime === "V2_TRADE_PLAN";
+  const MAX_SLOTS = 5; // mirrors tradePlan.MAX_SLOTS default
+
   function renderStats() {
-    const closed = graded.filter(g => g.outcome !== "OPEN");
+    // Regimes never mix: headline numbers come from V2 trade-plan grades
+    // once any exist; until then the legacy weekly record fills in,
+    // clearly labeled.
+    const closedAll = graded.filter(g => g.outcome !== "OPEN");
+    const v2closed = closedAll.filter(isV2);
+    const usingV2 = v2closed.length > 0;
+    const closed = usingV2 ? v2closed : closedAll;
+    const regimeLabel = usingV2 ? "V2 trade-plan" : "legacy weekly regime";
     const wins = closed.filter(g => g.outcome === "WIN").length;
     const losses = closed.filter(g => g.outcome === "LOSS").length;
     const total = wins + losses;
     const winRate = total ? (wins / total) * 100 : 0;
     const avgRet = total ? closed.reduce((s, g) => s + (g.stockReturnPct || 0), 0) / total : 0;
-    const open = portfolio.filter(p => p.status !== "CLOSED").length;
+    const openSlots = portfolio.filter(p => p.status !== "CLOSED" && isV2(p)).length;
 
     const wrCls = total === 0 ? "neutral" : winRate >= 50 ? "good" : "bad";
     $("stats").innerHTML = `
       <div class="stat ${wrCls}">
         <div class="label">Win rate</div>
         <div class="value num">${total ? winRate.toFixed(0) + "%" : "—"}</div>
-        <div class="sub">${total} graded pick${total === 1 ? "" : "s"}</div>
+        <div class="sub">${total} graded · ${regimeLabel}</div>
       </div>
       <div class="stat ${total === 0 ? "neutral" : "good"}">
         <div class="label">Record</div>
         <div class="value num">${wins}<span style="color:var(--dim)">–</span>${losses}</div>
-        <div class="sub">wins – losses</div>
+        <div class="sub">wins – losses · ${regimeLabel}</div>
       </div>
       <div class="stat ${avgRet >= 0 ? "good" : "bad"}">
         <div class="label">Avg stock move</div>
@@ -561,9 +571,9 @@
         <div class="sub">underlying, per graded pick</div>
       </div>
       <div class="stat neutral">
-        <div class="label">Active picks</div>
-        <div class="value num">${open}</div>
-        <div class="sub">still being evaluated</div>
+        <div class="label">Slots</div>
+        <div class="value num">${openSlots}<span style="color:var(--dim)">/</span>${MAX_SLOTS}</div>
+        <div class="sub">open trade-plan positions</div>
       </div>`;
   }
 
@@ -592,6 +602,7 @@
       <td class="num">${fmtMoney(p.stopLoss)}</td>
       <td class="num ${cls(pnl)}">${fmtPct(pnl)}</td>
       <td class="num" style="color:var(--muted)">${toTarget == null ? "—" : fmtPct(toTarget) + " away"}</td>
+      <td style="color:var(--muted);font-size:11px">${isV2(p) ? esc(p.expiryDate || "—") : '<span style="color:var(--dim)">legacy</span>'}</td>
       <td>${levelState(p).pill}</td>
     </tr>`;
   }
@@ -601,7 +612,7 @@
     list.sort((a, b) => levelState(b).sort - levelState(a).sort);
     const rows = list.map(openRow).join("");
     return `<div class="group-label">${title} <span>(${list.length})</span></div>` +
-      table(["Ticker", "Status", "Strategy", "Entry", "Now", "Target", "Stop", "P&L", "To target", "Level"], rows);
+      table(["Ticker", "Status", "Strategy", "Entry", "Now", "Target", "Stop", "P&L", "To target", "Expires", "Level"], rows);
   }
 
   function renderOpen() {
@@ -750,18 +761,29 @@
       const d = new Date(g.pickedDate);
       const dStr = isNaN(d) ? "—" : (d.getMonth() + 1) + "/" + d.getDate();
       const strat = stratTag(g.strategy);
+      // V2 grades carry the plan outcome; V1 rows stay labeled as the
+      // legacy weekly regime (different exit rules — never comparable).
+      const exitCell = isV2(g)
+        ? (g.exitOutcome === "HIT_TARGET" ? "🎯 target"
+          : g.exitOutcome === "HIT_STOP" ? "🛑 stop"
+          : "⏱ time" + (typeof g.daysHeld === "number" ? " (" + g.daysHeld + "d)" : ""))
+        : '<span style="color:var(--dim)">legacy weekly</span>';
+      const excess = typeof g.excessReturnPct === "number"
+        ? `<span class="num ${cls(g.excessReturnPct)}">${fmtPct(g.excessReturnPct)}</span>` : "—";
       return `<tr>
         <td><div class="tk">${esc(g.ticker)}</div><div class="type">${typeLabel(g.pickType)}</div></td>
         <td>${pill}</td>
+        <td style="font-size:11px">${exitCell}</td>
         <td>${strat}</td>
         <td class="num">${fmtMoney(g.entryPrice)}</td>
         <td class="num">${fmtMoney(g.finalPrice)}</td>
         <td class="num ${cls(g.stockReturnPct)}">${fmtPct(g.stockReturnPct)}</td>
+        <td class="num">${excess}</td>
         <td class="num" style="color:var(--dim)">${dStr}</td>
       </tr>`;
     }).join("");
     $("resWrap").innerHTML = table(
-      ["Ticker", "Outcome", "Strategy", "Entry", "Final", "Stock move", "Picked"], rows);
+      ["Ticker", "Outcome", "Exit", "Strategy", "Entry", "Final", "Stock move", "vs SPY", "Picked"], rows);
   }
 
   function stratTag(s) {
@@ -780,11 +802,17 @@
   }
 
   function renderStrategies() {
-    const closed = graded.filter(g => g.outcome !== "OPEN");
+    // Same regime rule as the headline stats: once V2 trade-plan grades
+    // exist, the head-to-head compares strategies under V2 rules only —
+    // legacy weekly outcomes aren't comparable and fall out of the panel.
+    const closedAll = graded.filter(g => g.outcome !== "OPEN");
+    const v2closed = closedAll.filter(isV2);
+    const usingV2 = v2closed.length > 0;
+    const closed = usingV2 ? v2closed : closedAll;
     const pull = tallyStrategy(closed.filter(g => g.strategy === "PULLBACK"));
     const brk = tallyStrategy(closed.filter(g => g.strategy === "BREAKOUT"));
     const tagged = pull.total + brk.total;
-    $("stratCount").textContent = tagged ? "(" + tagged + ")" : "";
+    $("stratCount").textContent = tagged ? "(" + tagged + (usingV2 ? " · V2" : " · legacy") + ")" : "";
 
     if (tagged === 0) {
       $("stratWrap").innerHTML = `<div class="empty">No tagged picks graded yet. Once both strategies have graded picks, their records show here side by side.</div>`;
